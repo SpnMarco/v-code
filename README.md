@@ -8,6 +8,7 @@ said, what the agent did, and where it went wrong.
 |---|---|---|---|---|
 | [expr-try-catch-errors](expr-try-catch-errors/) | Claude Code (claude-opus-5-5) | V6 + V8 (Italian) + V2 | 9 | 72 of 74 |
 | [adaptix-name-mapping-aliases](adaptix-name-mapping-aliases/) | Claude Code (claude-opus-5-5) | V3 + V2 | 6 | 44 of 44 |
+| [anko-default-function-arguments](anko-default-function-arguments/) | Claude Code (claude-opus-5-5) | V6 + V2 | 6 | 124 of 124 |
 
 Each task folder has a README (task, agent, axes, how to read it), `turns/turn-NN.md` (what was said, what the
 agent received, dictation errors, failure points, agent replies and tool calls), `repo/` (the code after each

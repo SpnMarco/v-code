@@ -15,6 +15,6 @@ Each task folder has a README (task, agent, axes, how to read it), `turns/turn-N
 agent received, dictation errors, failure points, agent replies and tool calls), `repo/` (the code after each
 turn) and `grading.md`.
 
-Each turn's code diff is also in `<task>/turns/turn-NN.patch`, readable directly on GitHub.
+Each turn that changed code also has its diff in `<task>/turns/turn-NN.patch`, readable directly on GitHub.
 
 To see one task's turns: `git log --reverse -- <task>/` and `git show <commit> -- <task>/repo`.

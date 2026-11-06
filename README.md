@@ -1,8 +1,8 @@
 # v-code
 
 Voice coding trajectories: real multi-turn voice sessions between a developer and a coding agent, one folder
-per task. In each folder, every commit is one turn, so you can step through the history to see what was
-said, what the agent did, and where it went wrong.
+per task. In each folder, every commit is one turn, so the history can be read step by step: what was said,
+what the agent did, and where it went wrong.
 
 | Task | Agent | Axes | Turns | Hidden tests |
 |---|---|---|---|---|

